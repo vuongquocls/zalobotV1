@@ -40,8 +40,11 @@ from ai_helper import draft_article, answer_question
 
 # === Config ===
 ZALO_URL = "https://chat.zalo.me/"
-USER_DATA_DIR = "/tmp/zalo_reminder_profile"
+# Thay /tmp bằng thư mục trong project để session không bị xoá khi reboot
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+USER_DATA_DIR = os.path.join(BASE_DIR, "zalo_profile")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
+HEADLESS = os.getenv("HEADLESS", "false").lower() == "true"
 
 ZALO_GROUP_NAME = os.getenv("ZALO_GROUP_NAME", "")
 REMINDER_HOUR = int(os.getenv("REMINDER_HOUR", "8"))
@@ -481,7 +484,7 @@ async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
-            headless=False,
+            headless=HEADLESS,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--start-maximized",
@@ -518,6 +521,11 @@ async def main():
             )
             print("=" * 50)
             print("⚠️  HÃY QUÉT MÃ QR TRÊN CỬA SỔ CHROME!")
+            if HEADLESS:
+                qr_path = os.path.join(BASE_DIR, "qr_code.png")
+                await page.screenshot(path=qr_path)
+                print(f"📸 Đã chụp ảnh mã QR tại: {qr_path}")
+                print("📩 Hãy tải file này về để quét mã!")
             print("⚠️  Anh có 5 PHÚT để quét...")
             print("=" * 50)
             await page.wait_for_selector(login_indicator, timeout=300000)
