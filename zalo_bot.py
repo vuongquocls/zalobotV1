@@ -532,11 +532,192 @@ async def main():
 
         # Tracking
         replied_signatures: set[str] = set()
-        last_seen_signature = ""
-
         last_seen_user_message_by_chat: dict[str, str] = {}
         last_processed_signature_by_chat: dict[str, str] = {}
+        scan_counter = 0  # Đếm vòng lặp để quét unread định kỳ
 
+        async def _find_unread_sidebar_indices() -> list[int]:
+            """Dùng JS tìm tất cả sidebar items có badge chưa đọc."""
+            try:
+                indices = await page.evaluate("""
+                    () => {
+                        const results = [];
+                        // Tìm tất cả conversation items trong sidebar
+                        const items = document.querySelectorAll(
+                            '[id*="conversation-list"] > div, ' +
+                            '.conv-list > div, ' +
+                            'div[class*="conv-item"], ' +
+                            'div.msg-item'
+                        );
+                        items.forEach((item, idx) => {
+                            // Tìm badge chưa đọc: thường là một element nhỏ chứa số
+                            const badges = item.querySelectorAll(
+                                '[class*="unread"], [class*="badge"], ' +
+                                '[class*="count"], span.num'
+                            );
+                            for (const b of badges) {
+                                const text = b.textContent.trim();
+                                // Badge chứa số (1, 2, 3...) hoặc có class unread
+                                if (/^\\d+$/.test(text) || 
+                                    b.className.includes('unread') ||
+                                    b.className.includes('badge')) {
+                                    results.push(idx);
+                                    break;
+                                }
+                            }
+                        });
+                        return results;
+                    }
+                """)
+                return indices or []
+            except:
+                return []
+
+        async def _get_chat_info(page_obj) -> tuple[str, bool]:
+            """Lấy tên và loại chat (group/personal) từ header hiện tại."""
+            chat_key = "__active__"
+            is_group = True  # Mặc định giả định là group để an toàn
+            try:
+                # Dùng JS để lấy header info (nhanh + chính xác hơn)
+                info = await page_obj.evaluate("""
+                    () => {
+                        // Tìm header chat
+                        const headerEl = document.querySelector(
+                            '[class*="chat-name"], [class*="conv-name"], ' +
+                            '.chat-box-header, [class*="header-info"]'
+                        );
+                        const name = headerEl ? headerEl.textContent.trim().split('\\n')[0] : '';
+                        
+                        // Tìm subtitle (chứa "X thành viên" cho group)
+                        const subtitleEl = document.querySelector(
+                            '[class*="header-subtitle"], [class*="chat-sub"], ' +
+                            '[class*="member-count"], [class*="group-member"]'
+                        );
+                        const subtitle = subtitleEl ? subtitleEl.textContent.trim() : '';
+                        
+                        // Tìm toàn bộ header area
+                        const headerArea = document.querySelector(
+                            '.chat-box-header, header, [class*="chat-header"]'
+                        );
+                        const fullHeader = headerArea ? headerArea.textContent : '';
+                        
+                        return { name, subtitle, fullHeader };
+                    }
+                """)
+                if info.get("name"):
+                    chat_key = info["name"][:50]  # giới hạn length
+                
+                full = (info.get("subtitle", "") + " " + info.get("fullHeader", "")).lower()
+                if "thành viên" in full or "members" in full or "nhóm" in full:
+                    is_group = True
+                else:
+                    is_group = False
+            except:
+                pass
+            return chat_key, is_group
+
+        async def _read_current_chat_messages() -> list[str]:
+            """Đọc tin nhắn từ chat đang mở."""
+            msgs = await page.locator(
+                "div.card--text, div.chat-message, span.text, "
+                "div.message-content, [class*='message-text']"
+            ).all()
+            context_msgs: list[str] = []
+            for m in list(msgs)[-15:]:
+                try:
+                    text = await m.inner_text()
+                    if text.strip():
+                        context_msgs.append(text.strip())
+                except:
+                    pass
+            return context_msgs
+
+        async def _process_chat(
+            is_unread_click: bool,
+            recent_bot_replies: list[str],
+        ):
+            """Xử lý tin nhắn trong chat đang mở."""
+            context_msgs = await _read_current_chat_messages()
+            if not context_msgs:
+                return
+
+            chat_key, is_group = await _get_chat_info(page)
+
+            # Lọc bỏ tin hệ thống và tin bot
+            valid_msgs: list[str] = []
+            for text in context_msgs:
+                clean = _normalize_text(text)
+                norm = re.sub(r'\W+', '', clean).lower()
+
+                if "Tải về để xem" in text and "KB" in text:
+                    continue
+
+                is_bot = False
+                for prev in recent_bot_replies[-30:]:
+                    if norm == prev:
+                        is_bot = True
+                        break
+                    if len(norm) >= 20 and len(prev) >= 20:
+                        if str(norm)[:20] == str(prev)[:20]:
+                            is_bot = True
+                            break
+                if is_bot:
+                    continue
+                valid_msgs.append(text)
+
+            if not valid_msgs:
+                return
+
+            sig = _build_signature(valid_msgs)
+            latest = valid_msgs[-1]
+
+            # Khởi tạo lần đầu cho chat này
+            is_first_seen = chat_key not in last_seen_user_message_by_chat
+            if is_first_seen:
+                last_seen_user_message_by_chat[chat_key] = sig
+                if not is_unread_click:
+                    return  # chat đang mở lần đầu → ghi nhận nhưng bỏ qua tin cũ
+
+            # Không có tin mới → bỏ qua
+            if (not is_first_seen) and last_seen_user_message_by_chat.get(chat_key) == sig:
+                return
+            if last_processed_signature_by_chat.get(chat_key) == sig:
+                return
+
+            last_seen_user_message_by_chat[chat_key] = sig
+            clean_latest = _normalize_text(latest).strip()
+
+            # 1. Lệnh / (luôn xử lý)
+            if clean_latest.startswith("/"):
+                print(f"\n📩 [{chat_key}] Lệnh: {clean_latest}")
+                last_processed_signature_by_chat[chat_key] = sig
+                replied_signatures.add(sig)
+                await _handle_command(page, clean_latest, recent_bot_replies)
+
+            # 2. Phản hồi nội dung
+            else:
+                mentioned, remainder = _detect_mention(clean_latest)
+
+                # Phản hồi nếu:
+                # (a) Được gọi tên (Group/Personal đều được)
+                # (b) Hoặc là chat cá nhân (không cần gọi tên)
+                should_respond = mentioned or (not is_group)
+
+                if should_respond:
+                    if mentioned:
+                        print(f"\n📩 [{chat_key}] Được gọi tên: {clean_latest}")
+                    else:
+                        print(f"\n📩 [{chat_key}] Chat cá nhân: {clean_latest}")
+                        remainder = clean_latest
+
+                    last_processed_signature_by_chat[chat_key] = sig
+                    replied_signatures.add(sig)
+                    await _handle_natural_language(
+                        page, remainder, recent_bot_replies
+                    )
+                # else: không gọi tên trong group → im lặng
+
+        # ===== VÒNG LẶP CHÍNH =====
         while True:
             try:
                 # === Kiểm tra nhắc tự động theo lịch ===
@@ -558,130 +739,52 @@ async def main():
                 try:
                     await page.evaluate(
                         'document.querySelectorAll(".zl-mini-notification, .ReactModal__Overlay, '
-                        '[class*=\\"notification\\"]").forEach(e => e.style.display="none")'
+                        '[class*=\\"notification\\"]\").forEach(e => e.style.display="none")'
                     )
                 except:
                     pass
 
-                # === Quét chat chưa đọc + chat hiện tại ===
-                unread_chats = await page.locator(
-                    "div.msg-item:has(div[class*='unread']), "
-                    "div[class*='conv-item']:has([class*='unread'])"
-                ).all()
-                chats_to_check = unread_chats if unread_chats else [None]
+                # === 1. Đọc tin nhắn từ chat đang mở ===
+                await _process_chat(
+                    is_unread_click=False,
+                    recent_bot_replies=recent_bot_replies,
+                )
 
-                for chat in chats_to_check:
-                    if chat:
-                        try:
-                            await chat.click(force=True)
-                            await asyncio.sleep(1)
-                        except:
-                            continue
+                # === 2. Mỗi 5 vòng, quét sidebar tìm chat chưa đọc ===
+                scan_counter += 1
+                if scan_counter >= 5:
+                    scan_counter = 0
 
-                    # === Đọc tin nhắn ===
-                    msgs = await page.locator(
-                        "div.card--text, div.chat-message, span.text, "
-                        "div.message-content, [class*='message-text']"
-                    ).all()
+                    unread_indices = await _find_unread_sidebar_indices()
 
-                    if not msgs:
-                        continue
+                    if unread_indices:
+                        print(f"🔍 Có {len(unread_indices)} chat chưa đọc")
 
-                    context_msgs: list[str] = []
-                    msgs_list = list(msgs)[-15:]
-                    for m in msgs_list:
-                        try:
-                            text = await m.inner_text()
-                            if text.strip():
-                                context_msgs.append(text.strip())
-                        except:
-                            pass
+                        for idx in unread_indices:
+                            try:
+                                # Click vào sidebar item có badge
+                                items = await page.locator(
+                                    '[id*="conversation-list"] > div, '
+                                    '.conv-list > div, '
+                                    'div[class*="conv-item"], '
+                                    'div.msg-item'
+                                ).all()
 
-                    if not context_msgs:
-                        continue
+                                if idx < len(items):
+                                    await items[idx].click(force=True)
+                                    await asyncio.sleep(1.5)
 
-                    # Xác định chat key
-                    chat_key = "__active__"
-                    try:
-                        if chat:
-                            chat_key = _normalize_text(
-                                await chat.inner_text()
-                            ).split("\n")[0].strip() or "__active__"
-                        else:
-                            header = page.locator(
-                                ".chat-box-header, header, "
-                                "[class*='chat-header'], [class*='conv-name']"
-                            ).first
-                            if await header.count() > 0:
-                                header_text = _normalize_text(await header.inner_text())
-                                if header_text:
-                                    chat_key = header_text.split("\n")[0].strip() or "__active__"
-                    except:
-                        pass
+                                    await _process_chat(
+                                        is_unread_click=True,
+                                        recent_bot_replies=recent_bot_replies,
+                                    )
+                            except Exception as e:
+                                print(f"⚠️ Lỗi quét chat [{idx}]: {e}")
+                                continue
 
-                    # Lọc bỏ tin hệ thống và tin bot
-                    valid_msgs: list[str] = []
-                    for text in context_msgs:
-                        clean = _normalize_text(text)
-                        norm = re.sub(r'\W+', '', clean).lower()
-
-                        if "Tải về để xem" in text and "KB" in text:
-                            continue
-
-                        is_bot = False
-                        for prev in recent_bot_replies[-30:]:
-                            if norm == prev:
-                                is_bot = True
-                                break
-                            if len(norm) >= 20 and len(prev) >= 20:
-                                if str(norm)[:20] == str(prev)[:20]:
-                                    is_bot = True
-                                    break
-                        if is_bot:
-                            continue
-                        valid_msgs.append(text)
-
-                    if not valid_msgs:
-                        continue
-
-                    sig = _build_signature(valid_msgs)
-                    latest = valid_msgs[-1]
-
-                    # Khởi tạo lần đầu cho chat này
-                    is_first_seen = chat_key not in last_seen_user_message_by_chat
-                    if is_first_seen:
-                        last_seen_user_message_by_chat[chat_key] = sig
-                        if chat is None:  # không phải unread → bỏ qua tin cũ
-                            continue
-
-                    # Không có tin mới → bỏ qua
-                    if (not is_first_seen) and last_seen_user_message_by_chat.get(chat_key) == sig:
-                        continue
-                    if last_processed_signature_by_chat.get(chat_key) == sig:
-                        continue
-
-                    last_seen_user_message_by_chat[chat_key] = sig
-                    clean_latest = _normalize_text(latest).strip()
-
-                    # 1. Lệnh / (luôn xử lý)
-                    if clean_latest.startswith("/"):
-                        print(f"\n📩 [{chat_key}] Lệnh: {clean_latest}")
-                        last_processed_signature_by_chat[chat_key] = sig
-                        replied_signatures.add(sig)
-                        await _handle_command(page, clean_latest, recent_bot_replies)
-
-                    # 2. Gọi tên bot → phản hồi
-                    else:
-                        mentioned, remainder = _detect_mention(clean_latest)
-                        if mentioned and remainder:
-                            print(f"\n📩 [{chat_key}] Được gọi tên: {clean_latest}")
-                            print(f"   Nội dung: {remainder}")
-                            last_processed_signature_by_chat[chat_key] = sig
-                            replied_signatures.add(sig)
-                            await _handle_natural_language(
-                                page, remainder, recent_bot_replies
-                            )
-                        # else: không gọi tên → im lặng
+                        # Quay lại nhóm chính sau khi xử lý xong
+                        if ZALO_GROUP_NAME:
+                            await _navigate_to_group(page, ZALO_GROUP_NAME)
 
             except Exception as e:
                 print(f"⚠️ Lỗi vòng lặp (thử lại sau 3s): {e}")
