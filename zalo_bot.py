@@ -522,6 +522,9 @@ async def main():
             print("=" * 50)
             print("⚠️  HÃY QUÉT MÃ QR TRÊN CỬA SỔ CHROME!")
             if HEADLESS:
+                # Chờ một chút để QR code kịp hiện ra hoàn chỉnh
+                print("⏳ Đang chờ mã QR tải...")
+                await asyncio.sleep(5)
                 qr_path = os.path.join(BASE_DIR, "qr_code.png")
                 await page.screenshot(path=qr_path)
                 print(f"📸 Đã chụp ảnh mã QR tại: {qr_path}")
