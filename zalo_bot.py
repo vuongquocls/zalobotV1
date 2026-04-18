@@ -2,8 +2,9 @@
 zalo_bot.py — Bot Zalo nhắc việc Truyền thông VQG Yok Đôn
 
 Chạy trên Zalo Web qua Playwright.
+- Chỉ trả lời khi được gọi đích danh (ví dụ: "Nhân Viên Mới Yok Đôn")
+- Hiểu ngôn ngữ tự nhiên (không bắt buộc dùng lệnh /)
 - Tự động nhắc việc theo lịch (mặc định 8h sáng)
-- Lắng nghe lệnh /nhacviec, /hotrobai trong nhóm Zalo
 - Đọc Google Sheet để lấy dữ liệu công việc
 """
 
@@ -47,6 +48,20 @@ REMINDER_HOUR = int(os.getenv("REMINDER_HOUR", "8"))
 REMINDER_MINUTE = int(os.getenv("REMINDER_MINUTE", "0"))
 DAYS_AHEAD = int(os.getenv("DAYS_AHEAD", "3"))
 
+# === Tên bot — chỉ trả lời khi được gọi đích danh ===
+# Có thể đặt nhiều tên, cách nhau bằng dấu phẩy
+BOT_NAMES_RAW = os.getenv("BOT_NAME", "Nhân Viên Mới Yok Đôn")
+BOT_NAMES = [n.strip().lower() for n in BOT_NAMES_RAW.split(",") if n.strip()]
+# Tạo thêm biến thể viết tắt/không dấu tự động
+import unicodedata
+def _remove_accents(s: str) -> str:
+    nfkd = unicodedata.normalize('NFKD', s)
+    return ''.join(c for c in nfkd if not unicodedata.combining(c))
+BOT_NAMES_NORMALIZED = list(set(
+    [n for n in BOT_NAMES]
+    + [_remove_accents(n) for n in BOT_NAMES]
+))
+
 # Temp dir để tránh macOS chặn
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.environ["TMPDIR"] = os.path.join(BASE_DIR, ".tmp")
@@ -65,6 +80,90 @@ def _build_signature(messages: list[str]) -> str:
         return ""
     latest = _normalize_text(messages[-1])
     return re.sub(r'\s+', ' ', latest).strip().lower()
+
+
+def _detect_mention(text: str) -> tuple[bool, str]:
+    """Kiểm tra tin nhắn có gọi tên bot không.
+
+    Returns:
+        (is_mentioned, message_without_bot_name)
+    """
+    lower = text.lower().strip()
+    lower_no_accent = _remove_accents(lower)
+
+    for name in BOT_NAMES_NORMALIZED:
+        # Tìm tên bot ở đầu câu, giữa câu, hoặc sau ê/ơi/này
+        patterns = [
+            re.compile(r'^[êeơ]\s+' + re.escape(name) + r'[,!?.:\s]', re.IGNORECASE),
+            re.compile(r'^' + re.escape(name) + r'[,!?.:\s]', re.IGNORECASE),
+            re.compile(r'[,!?.:]\s*' + re.escape(name) + r'[,!?.:\s]', re.IGNORECASE),
+            re.compile(re.escape(name), re.IGNORECASE),
+        ]
+        for pat in patterns:
+            target = lower_no_accent if _remove_accents(name) == name else lower
+            m = pat.search(target)
+            if m:
+                # Bóc phần nội dung thực (bỏ tên bot)
+                remainder = text
+                # Xoá tên bot (giữ nguyên case gốc)
+                for orig_name_variant in BOT_NAMES + [BOT_NAMES_RAW]:
+                    remainder = re.sub(
+                        r'(?i)[êeơ]\s+' + re.escape(orig_name_variant) + r'[,!?.:\s]*',
+                        '', remainder
+                    )
+                    remainder = re.sub(
+                        r'(?i)' + re.escape(orig_name_variant) + r'[,!?.:\s]*',
+                        '', remainder
+                    )
+                remainder = remainder.strip().lstrip(',!?.:').strip()
+                return True, remainder
+
+    return False, text
+
+
+def _detect_intent(text: str) -> str:
+    """Phát hiện ý định từ câu hỏi tự nhiên.
+
+    Returns: 'nhacviec' | 'xemviec' | 'hotrobai' | 'help' | 'hoidap'
+    """
+    lower = text.lower()
+    lower_na = _remove_accents(lower)
+
+    # Nhắc việc / lịch đăng bài
+    nhac_kws = [
+        'nhắc việc', 'nhac viec', 'có lịch', 'co lich', 'lịch đăng',
+        'lich dang', 'hôm nay', 'hom nay', 'đăng bài', 'dang bai',
+        'công việc', 'cong viec', 'việc gì', 'viec gi', 'có gì',
+        'co gi', 'nhắc', 'nhac', 'deadline', 'hạn', 'han',
+        'phải làm', 'phai lam', 'cần làm', 'can lam',
+    ]
+    if any(k in lower or k in lower_na for k in nhac_kws):
+        return 'nhacviec'
+
+    # Xem danh sách
+    xem_kws = [
+        'xem việc', 'xem viec', 'danh sách', 'danh sach', 'liệt kê',
+        'liet ke', 'list', 'bao nhiêu việc', 'bao nhieu viec',
+    ]
+    if any(k in lower or k in lower_na for k in xem_kws):
+        return 'xemviec'
+
+    # Hỗ trợ viết bài
+    bai_kws = [
+        'viết bài', 'viet bai', 'soạn bài', 'soan bai', 'gợi ý',
+        'goi y', 'nội dung', 'noi dung', 'caption', 'kịch bản',
+        'kich ban', 'hỗ trợ bài', 'ho tro bai', 'giúp viết', 'giup viet',
+    ]
+    if any(k in lower or k in lower_na for k in bai_kws):
+        return 'hotrobai'
+
+    # Help
+    help_kws = ['hướng dẫn', 'huong dan', 'help', 'làm gì được', 'lam gi duoc', 'biết làm gì', 'biet lam gi']
+    if any(k in lower or k in lower_na for k in help_kws):
+        return 'help'
+
+    # Mặc định: hỏi đáp tự do
+    return 'hoidap'
 
 
 async def _send_message(page, text: str):
@@ -231,10 +330,14 @@ async def _handle_command(page, text: str, recent_bot_replies: list[str]):
 
     # === /help ===
     if lower.startswith("/help") or lower.startswith("/huongdan"):
+        bot_display = BOT_NAMES_RAW.split(',')[0].strip()
         help_text = (
-            "BOT NHẮC VIỆC TRUYỀN THÔNG\n"
-            "=" * 30 + "\n\n"
-            "Các lệnh:\n"
+            f"BOT NHẮC VIỆC TRUYỀN THÔNG ({bot_display})\n"
+            "=" * 36 + "\n\n"
+            f"Gọi tên em ({bot_display}) để hỏi, ví dụ:\n"
+            f"  Ê {bot_display}, hôm nay có lịch đăng bài không?\n"
+            f"  {bot_display}, giúp viết bài về kiểm lâm\n\n"
+            "Hoặc dùng lệnh tắt:\n"
             "/nhacviec — Nhắc việc ngay (đọc Sheet)\n"
             "/xemviec — Xem danh sách việc chưa xong\n"
             "/hotrobai [mô tả] — AI gợi ý nội dung bài viết\n"
@@ -246,8 +349,40 @@ async def _handle_command(page, text: str, recent_bot_replies: list[str]):
         return
 
 
+async def _handle_natural_language(page, text: str, recent_bot_replies: list[str]):
+    """Xử lý câu hỏi tự nhiên (không phải lệnh /)."""
+    intent = _detect_intent(text)
+
+    if intent == 'nhacviec':
+        await _do_reminder(page)
+    elif intent == 'xemviec':
+        await _handle_command(page, '/xemviec', recent_bot_replies)
+    elif intent == 'hotrobai':
+        await _handle_command(page, f'/hotrobai {text}', recent_bot_replies)
+    elif intent == 'help':
+        await _handle_command(page, '/help', recent_bot_replies)
+    else:
+        # Hỏi đáp tự do — gửi kèm context từ Sheet
+        try:
+            all_tasks = fetch_all_tasks()
+            context_parts = []
+            for t in all_tasks:
+                context_parts.append(
+                    f"[{t.due_date_raw}] {t.topic} | {t.assignee or '?'} | {t.status or '?'}"
+                )
+            context = "\n".join(context_parts)
+            result = await answer_question(text, context)
+            if len(result) > 3500:
+                result = result[:3500] + "\n\n(Đã rút gọn)"
+            await _send_message(page, result)
+            recent_bot_replies.append(re.sub(r'\W+', '', result).lower())
+        except Exception as e:
+            await _send_message(page, f"Em gặp lỗi khi trả lời: {e}")
+
+
 async def main():
     print("🚀 Khởi động Zalo Work Reminder Bot...")
+    print(f"🏷️  Tên bot: {BOT_NAMES_RAW}")
     print(f"📋 Google Sheet: {os.getenv('GOOGLE_SHEET_ID', '(chưa cấu hình)')}")
     print(f"⏰ Nhắc tự động: {REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}")
     print(f"👥 Nhóm Zalo: {ZALO_GROUP_NAME or '(chưa cấu hình)'}")
@@ -387,16 +522,29 @@ async def main():
 
                             # Chỉ xử lý nếu có tin mới
                             if sig and sig != last_seen_signature and sig not in replied_signatures:
-                                # Kiểm tra có phải lệnh không
                                 clean_latest = _normalize_text(latest).strip()
+
+                                # 1. Lệnh / (luôn xử lý)
                                 if clean_latest.startswith("/"):
-                                    print(f"\n📩 Lệnh mới: {clean_latest}")
+                                    print(f"\n📩 Lệnh: {clean_latest}")
                                     last_seen_signature = sig
                                     replied_signatures.add(sig)
                                     await _handle_command(page, clean_latest, recent_bot_replies)
+
+                                # 2. Gọi tên bot → phản hồi
                                 else:
-                                    # Chỉ cập nhật signature, không phản hồi tin thường
-                                    last_seen_signature = sig
+                                    mentioned, remainder = _detect_mention(clean_latest)
+                                    if mentioned and remainder:
+                                        print(f"\n📩 Được gọi tên: {clean_latest}")
+                                        print(f"   Nội dung: {remainder}")
+                                        last_seen_signature = sig
+                                        replied_signatures.add(sig)
+                                        await _handle_natural_language(
+                                            page, remainder, recent_bot_replies
+                                        )
+                                    else:
+                                        # Không gọi tên bot → bỏ qua
+                                        last_seen_signature = sig
 
             except Exception as e:
                 print(f"⚠️ Lỗi vòng lặp (thử lại sau 3s): {e}")
