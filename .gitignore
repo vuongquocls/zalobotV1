@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+credentials/service_account.json
+/tmp/zalo_reminder_profile/
+.tmp/
+.DS_Store

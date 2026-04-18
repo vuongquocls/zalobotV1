@@ -1,0 +1,153 @@
+"""
+message_builder.py — Format tin nhắn nhắc việc cho Zalo
+
+Tin nhắn text thuần (không markdown) vì Zalo Web không render markdown.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sheet_reader import Task
+
+
+def _format_date(dt: datetime | None, raw: str = "") -> str:
+    if dt:
+        return dt.strftime("%d/%m")
+    return raw or "??"
+
+
+def _task_line(task: "Task", show_status: bool = True) -> str:
+    """Format 1 dòng task."""
+    date_str = _format_date(task.due_date, task.due_date_raw)
+    assignee = task.assignee or "(chưa giao)"
+    parts = [f"  [{date_str}] {task.topic}"]
+    parts.append(f"    → Phụ trách: {assignee}")
+    if show_status and task.status:
+        parts.append(f"    → Trạng thái: {task.status}")
+    return "\n".join(parts)
+
+
+def build_today_empty_message() -> str:
+    """Tin nhắn khi hôm nay không có nội dung nào trong Sheet."""
+    now_str = datetime.now().strftime("%d/%m/%Y")
+    return (
+        f"NHẮC VIỆC TRUYỀN THÔNG - {now_str}\n"
+        f"{'=' * 36}\n\n"
+        f"Hôm nay ({now_str}) chưa có nội dung nào trong Bảng kế hoạch!\n\n"
+        "Anh/chị vui lòng cập nhật kế hoạch truyền thông vào Sheet giúp em nhé.\n\n"
+        "Link: https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8"
+    )
+
+
+def build_daily_reminder(
+    today_tasks: list["Task"],
+    overdue_tasks: list["Task"],
+    upcoming_tasks: list["Task"],
+    unassigned_tasks: list["Task"],
+    today_is_empty: bool = False,
+) -> str | None:
+    """Xây dựng tin nhắn nhắc việc hàng ngày. Trả None nếu không có gì cần nhắc."""
+
+    sections: list[str] = []
+    now_str = datetime.now().strftime("%d/%m/%Y")
+
+    # Header
+    sections.append(f"NHẮC VIỆC TRUYỀN THÔNG - {now_str}")
+    sections.append("=" * 36)
+
+    has_content = False
+
+    # Hôm nay trống — nhắc mọi người điền Sheet
+    if today_is_empty:
+        has_content = True
+        sections.append("")
+        sections.append(f"Hôm nay ({now_str}) CHƯA CÓ nội dung nào trong Sheet!")
+        sections.append("Anh/chị vui lòng cập nhật kế hoạch vào Bảng giúp em.")
+
+    # Quá hạn
+    if overdue_tasks:
+        has_content = True
+        sections.append("")
+        sections.append(f"QUÁ HẠN ({len(overdue_tasks)} việc):")
+        for t in overdue_tasks:
+            sections.append(_task_line(t))
+
+    # Hôm nay
+    if today_tasks:
+        has_content = True
+        sections.append("")
+        sections.append(f"HÔM NAY ({len(today_tasks)} việc):")
+        for t in today_tasks:
+            sections.append(_task_line(t))
+
+    # Sắp đến hạn
+    if upcoming_tasks:
+        has_content = True
+        sections.append("")
+        sections.append(f"SẮP ĐẾN HẠN ({len(upcoming_tasks)} việc):")
+        for t in upcoming_tasks:
+            sections.append(_task_line(t))
+
+    # Chưa giao
+    if unassigned_tasks:
+        has_content = True
+        sections.append("")
+        sections.append(f"CHƯA GIAO ({len(unassigned_tasks)} việc):")
+        for t in unassigned_tasks:
+            sections.append(_task_line(t, show_status=False))
+        sections.append("")
+        sections.append("Anh/chị điền tên người phụ trách vào Sheet giúp em nhé!")
+
+    if not has_content:
+        return None
+
+    # Ghi chú Google Sheet
+    sections.append("")
+    sections.append("Xem chi tiết: https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8")
+
+    return "\n".join(sections)
+
+
+def build_no_work_message() -> str:
+    """Tin nhắn khi Sheet trống hoặc không có task nào cần nhắc."""
+    now_str = datetime.now().strftime("%d/%m/%Y")
+    return (
+        f"NHẮC VIỆC TRUYỀN THÔNG - {now_str}\n"
+        f"{'=' * 36}\n\n"
+        "Hiện tại chưa có công việc nào cần nhắc.\n"
+        "Mọi người nhớ cập nhật tiến độ vào Sheet nhé!\n\n"
+        "Xem Sheet: https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8"
+    )
+
+
+def build_sheet_empty_message() -> str:
+    """Tin nhắn khi Sheet chưa có dữ liệu cho kỳ này."""
+    now_str = datetime.now().strftime("%d/%m/%Y")
+    return (
+        f"NHẮC VIỆC TRUYỀN THÔNG - {now_str}\n"
+        f"{'=' * 36}\n\n"
+        "Sheet chưa có nội dung cho kỳ này.\n"
+        "Anh/chị vui lòng điền kế hoạch truyền thông vào Sheet!\n\n"
+        "Link: https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8"
+    )
+
+
+def build_task_detail(task: "Task") -> str:
+    """Format chi tiết 1 task để gửi khi hỏi cụ thể."""
+    lines = [
+        f"CHI TIẾT CÔNG VIỆC (dòng {task.row_number})",
+        "-" * 30,
+        f"Chủ đề: {task.topic}",
+        f"Nhóm nội dung: {task.content_group}",
+        f"Ngày đăng dự kiến: {task.due_date_raw}",
+        f"Kênh: {task.channel}",
+        f"Định dạng: {task.format_type}",
+        f"Phụ trách: {task.assignee or '(chưa giao)'}",
+        f"Trạng thái: {task.status or '(chưa cập nhật)'}",
+    ]
+    if task.link:
+        lines.append(f"Link: {task.link}")
+    return "\n".join(lines)
