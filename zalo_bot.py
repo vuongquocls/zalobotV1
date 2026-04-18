@@ -82,30 +82,41 @@ def _build_signature(messages: list[str]) -> str:
     return re.sub(r'\s+', ' ', latest).strip().lower()
 
 
+def _strip_zalo_mentions(text: str) -> str:
+    """Xoá tag @mention của Zalo (dạng @Tên Người Dùng) ra khỏi text."""
+    # Zalo @mention: @TenNguoiDung hoặc @Tên Người Dùng (cho đến dấu , hoặc cuối)
+    cleaned = re.sub(r'@[\w\sÀ-ỹ]+?(?=[,!?.:\s]|$)', '', text)
+    return re.sub(r'\s{2,}', ' ', cleaned).strip()
+
+
 def _detect_mention(text: str) -> tuple[bool, str]:
     """Kiểm tra tin nhắn có gọi tên bot không.
+
+    Hỗ trợ:
+    - Gọi thẳng: "Nhân Viên Mới Yok Đôn, hôm nay..."
+    - Gọi với ê/ơi: "Ê Nhân Viên Mới Yok Đôn, hôm nay..."
+    - Zalo @mention: "@Nhân Viên Mới Yok Đôn hôm nay..."
+    - Kết hợp: "Ê Nhân Viên Mới Yok Đôn @Nhân Viên Mới Yok Đôn, hôm nay..."
 
     Returns:
         (is_mentioned, message_without_bot_name)
     """
-    lower = text.lower().strip()
+    # Bước 1: Xoá @mention tags trước
+    cleaned = _strip_zalo_mentions(text)
+    lower = cleaned.lower().strip()
     lower_no_accent = _remove_accents(lower)
 
     for name in BOT_NAMES_NORMALIZED:
-        # Tìm tên bot ở đầu câu, giữa câu, hoặc sau ê/ơi/này
+        # Tìm tên bot ở bất kỳ đâu trong câu
         patterns = [
-            re.compile(r'^[êeơ]\s+' + re.escape(name) + r'[,!?.:\s]', re.IGNORECASE),
-            re.compile(r'^' + re.escape(name) + r'[,!?.:\s]', re.IGNORECASE),
-            re.compile(r'[,!?.:]\s*' + re.escape(name) + r'[,!?.:\s]', re.IGNORECASE),
+            re.compile(r'[êeơ]\s+' + re.escape(name), re.IGNORECASE),
             re.compile(re.escape(name), re.IGNORECASE),
         ]
         for pat in patterns:
             target = lower_no_accent if _remove_accents(name) == name else lower
-            m = pat.search(target)
-            if m:
-                # Bóc phần nội dung thực (bỏ tên bot)
-                remainder = text
-                # Xoá tên bot (giữ nguyên case gốc)
+            if pat.search(target):
+                # Bóc phần nội dung thực (bỏ tên bot + tiền tố)
+                remainder = cleaned
                 for orig_name_variant in BOT_NAMES + [BOT_NAMES_RAW]:
                     remainder = re.sub(
                         r'(?i)[êeơ]\s+' + re.escape(orig_name_variant) + r'[,!?.:\s]*',
@@ -115,8 +126,37 @@ def _detect_mention(text: str) -> tuple[bool, str]:
                         r'(?i)' + re.escape(orig_name_variant) + r'[,!?.:\s]*',
                         '', remainder
                     )
+                    # Cả dạng không dấu
+                    remainder = re.sub(
+                        r'(?i)[eeơ]\s+' + re.escape(_remove_accents(orig_name_variant)) + r'[,!?.:\s]*',
+                        '', remainder
+                    )
+                    remainder = re.sub(
+                        r'(?i)' + re.escape(_remove_accents(orig_name_variant)) + r'[,!?.:\s]*',
+                        '', remainder
+                    )
                 remainder = remainder.strip().lstrip(',!?.:').strip()
-                return True, remainder
+                if remainder:
+                    return True, remainder
+                # Nếu sau khi bỏ tên hết text → vẫn detected nhưng hỏi mặc định
+                return True, "hôm nay có việc gì không?"
+
+    # Kiểm tra thêm: nếu text gốc (trước khi strip @) có chứa @TenBot
+    original_lower = text.lower()
+    for name in BOT_NAMES:
+        if f'@{name}' in original_lower or f'@ {name}' in original_lower:
+            remainder = _strip_zalo_mentions(text)
+            for orig_name_variant in BOT_NAMES + [BOT_NAMES_RAW]:
+                remainder = re.sub(
+                    r'(?i)[êeơ]\s+' + re.escape(orig_name_variant) + r'[,!?.:\s]*',
+                    '', remainder
+                )
+                remainder = re.sub(
+                    r'(?i)' + re.escape(orig_name_variant) + r'[,!?.:\s]*',
+                    '', remainder
+                )
+            remainder = remainder.strip().lstrip(',!?.:').strip()
+            return True, remainder or "hôm nay có việc gì không?"
 
     return False, text
 
@@ -181,44 +221,91 @@ async def _send_message(page, text: str):
 
 
 async def _navigate_to_group(page, group_name: str) -> bool:
-    """Tìm và mở nhóm Zalo theo tên."""
+    """Tìm và mở nhóm Zalo theo tên — nhiều cách fallback."""
     if not group_name:
         print("⚠️ Chưa cấu hình ZALO_GROUP_NAME trong .env")
         return False
 
-    # Tìm trong danh sách chat
-    search_input = page.locator(
-        "input[placeholder*='Tìm kiếm'], input[placeholder*='Search']"
-    ).first
-    if await search_input.count() > 0:
-        await search_input.click(force=True)
-        await search_input.fill(group_name)
-        await asyncio.sleep(2)
+    # === Cách 1: Click trực tiếp từ sidebar nếu nhóm đang hiện ===
+    try:
+        sidebar_items = await page.locator(
+            "div[class*='conv-item'], div.msg-item, div[data-id]"
+        ).all()
+        for item in sidebar_items:
+            try:
+                item_text = await item.inner_text()
+                if group_name.lower() in item_text.lower():
+                    await item.click(force=True)
+                    await asyncio.sleep(1)
+                    print(f"✅ Đã mở nhóm (sidebar): {group_name}")
+                    return True
+            except:
+                continue
+    except:
+        pass
 
-        # Click kết quả đầu tiên
-        result = page.locator(f"div.msg-item:has-text('{group_name}')").first
-        if await result.count() > 0:
-            await result.click(force=True)
-            await asyncio.sleep(1)
-            # Xoá text tìm kiếm
-            await search_input.clear()
-            await page.keyboard.press("Escape")
-            print(f"✅ Đã mở nhóm: {group_name}")
-            return True
+    # === Cách 2: Dùng ô tìm kiếm ===
+    search_selectors = [
+        "input[placeholder*='Tìm kiếm']",
+        "input[placeholder*='Search']",
+        "input[placeholder*='tìm']",
+        "input[type='text'][class*='search']",
+        "#contact-search-input",
+    ]
+    search_input = None
+    for sel in search_selectors:
+        loc = page.locator(sel).first
+        if await loc.count() > 0:
+            search_input = loc
+            break
 
-        # Thử bấm kết quả tìm kiếm khác
-        any_result = page.locator(".search-item, .conv-search-item, [class*='search-result']").first
-        if await any_result.count() > 0:
-            await any_result.click(force=True)
-            await asyncio.sleep(1)
-            await search_input.clear()
-            await page.keyboard.press("Escape")
-            print(f"✅ Đã mở nhóm (tìm kiếm): {group_name}")
-            return True
+    if search_input:
+        try:
+            await search_input.click(force=True)
+            await asyncio.sleep(0.5)
+            await search_input.fill(group_name)
+            await asyncio.sleep(3)  # Chờ lâu hơn cho kết quả tìm kiếm
 
-        await page.keyboard.press("Escape")
+            # Thử nhiều selector kết quả
+            result_selectors = [
+                f"text='{group_name}'",
+                f"div:has-text('{group_name}')",
+                ".search-item",
+                "[class*='search-result']",
+                "[class*='conv-item']",
+                ".msg-item",
+            ]
+            for sel in result_selectors:
+                try:
+                    result = page.locator(sel).first
+                    if await result.count() > 0:
+                        await result.click(force=True)
+                        await asyncio.sleep(1)
+                        # Đóng ô tìm kiếm
+                        try:
+                            await search_input.clear()
+                        except:
+                            pass
+                        try:
+                            await page.keyboard.press("Escape")
+                        except:
+                            pass
+                        print(f"✅ Đã mở nhóm (tìm kiếm): {group_name}")
+                        return True
+                except:
+                    continue
+
+            # Đóng ô tìm kiếm nếu không tìm thấy
+            try:
+                await search_input.clear()
+                await page.keyboard.press("Escape")
+            except:
+                pass
+        except Exception as e:
+            print(f"⚠️ Lỗi khi tìm kiếm: {e}")
 
     print(f"⚠️ Không tìm thấy nhóm: {group_name}")
+    print(f"   Bot sẽ lắng nghe tất cả các chat có tin nhắn chưa đọc.")
     return False
 
 
@@ -447,6 +534,9 @@ async def main():
         replied_signatures: set[str] = set()
         last_seen_signature = ""
 
+        last_seen_user_message_by_chat: dict[str, str] = {}
+        last_processed_signature_by_chat: dict[str, str] = {}
+
         while True:
             try:
                 # === Kiểm tra nhắc tự động theo lịch ===
@@ -458,7 +548,6 @@ async def main():
                     and today_key != last_reminder_date
                 ):
                     print(f"\n⏰ Đến giờ nhắc việc tự động ({now.strftime('%H:%M')})...")
-                    # Mở nhóm trước khi gửi
                     if ZALO_GROUP_NAME:
                         await _navigate_to_group(page, ZALO_GROUP_NAME)
                         await asyncio.sleep(1)
@@ -474,14 +563,32 @@ async def main():
                 except:
                     pass
 
-                # === Đọc tin nhắn mới ===
-                msgs = await page.locator(
-                    "div.card--text, div.chat-message, span.text, div.message-content, [class*='message-text']"
+                # === Quét chat chưa đọc + chat hiện tại ===
+                unread_chats = await page.locator(
+                    "div.msg-item:has(div[class*='unread']), "
+                    "div[class*='conv-item']:has([class*='unread'])"
                 ).all()
+                chats_to_check = unread_chats if unread_chats else [None]
 
-                if msgs:
+                for chat in chats_to_check:
+                    if chat:
+                        try:
+                            await chat.click(force=True)
+                            await asyncio.sleep(1)
+                        except:
+                            continue
+
+                    # === Đọc tin nhắn ===
+                    msgs = await page.locator(
+                        "div.card--text, div.chat-message, span.text, "
+                        "div.message-content, [class*='message-text']"
+                    ).all()
+
+                    if not msgs:
+                        continue
+
                     context_msgs: list[str] = []
-                    msgs_list = list(msgs)[-10:]
+                    msgs_list = list(msgs)[-15:]
                     for m in msgs_list:
                         try:
                             text = await m.inner_text()
@@ -490,61 +597,91 @@ async def main():
                         except:
                             pass
 
-                    if context_msgs:
-                        # Lọc bỏ tin nhắn hệ thống và tin bot
-                        valid_msgs: list[str] = []
-                        for text in context_msgs:
-                            clean = _normalize_text(text)
-                            norm = re.sub(r'\W+', '', clean).lower()
+                    if not context_msgs:
+                        continue
 
-                            # Bỏ tin hệ thống Zalo
-                            if "Tải về để xem" in text and "KB" in text:
-                                continue
+                    # Xác định chat key
+                    chat_key = "__active__"
+                    try:
+                        if chat:
+                            chat_key = _normalize_text(
+                                await chat.inner_text()
+                            ).split("\n")[0].strip() or "__active__"
+                        else:
+                            header = page.locator(
+                                ".chat-box-header, header, "
+                                "[class*='chat-header'], [class*='conv-name']"
+                            ).first
+                            if await header.count() > 0:
+                                header_text = _normalize_text(await header.inner_text())
+                                if header_text:
+                                    chat_key = header_text.split("\n")[0].strip() or "__active__"
+                    except:
+                        pass
 
-                            # Bỏ tin bot đã gửi
-                            is_bot = False
-                            for prev in recent_bot_replies[-20:]:
-                                if norm == prev:
+                    # Lọc bỏ tin hệ thống và tin bot
+                    valid_msgs: list[str] = []
+                    for text in context_msgs:
+                        clean = _normalize_text(text)
+                        norm = re.sub(r'\W+', '', clean).lower()
+
+                        if "Tải về để xem" in text and "KB" in text:
+                            continue
+
+                        is_bot = False
+                        for prev in recent_bot_replies[-30:]:
+                            if norm == prev:
+                                is_bot = True
+                                break
+                            if len(norm) >= 20 and len(prev) >= 20:
+                                if str(norm)[:20] == str(prev)[:20]:
                                     is_bot = True
                                     break
-                                if len(norm) >= 20 and len(prev) >= 20:
-                                    if str(norm)[:20] == str(prev)[:20]:
-                                        is_bot = True
-                                        break
-                            if is_bot:
-                                continue
+                        if is_bot:
+                            continue
+                        valid_msgs.append(text)
 
-                            valid_msgs.append(text)
+                    if not valid_msgs:
+                        continue
 
-                        if valid_msgs:
-                            sig = _build_signature(valid_msgs)
-                            latest = valid_msgs[-1]
+                    sig = _build_signature(valid_msgs)
+                    latest = valid_msgs[-1]
 
-                            # Chỉ xử lý nếu có tin mới
-                            if sig and sig != last_seen_signature and sig not in replied_signatures:
-                                clean_latest = _normalize_text(latest).strip()
+                    # Khởi tạo lần đầu cho chat này
+                    is_first_seen = chat_key not in last_seen_user_message_by_chat
+                    if is_first_seen:
+                        last_seen_user_message_by_chat[chat_key] = sig
+                        if chat is None:  # không phải unread → bỏ qua tin cũ
+                            continue
 
-                                # 1. Lệnh / (luôn xử lý)
-                                if clean_latest.startswith("/"):
-                                    print(f"\n📩 Lệnh: {clean_latest}")
-                                    last_seen_signature = sig
-                                    replied_signatures.add(sig)
-                                    await _handle_command(page, clean_latest, recent_bot_replies)
+                    # Không có tin mới → bỏ qua
+                    if (not is_first_seen) and last_seen_user_message_by_chat.get(chat_key) == sig:
+                        continue
+                    if last_processed_signature_by_chat.get(chat_key) == sig:
+                        continue
 
-                                # 2. Gọi tên bot → phản hồi
-                                else:
-                                    mentioned, remainder = _detect_mention(clean_latest)
-                                    if mentioned and remainder:
-                                        print(f"\n📩 Được gọi tên: {clean_latest}")
-                                        print(f"   Nội dung: {remainder}")
-                                        last_seen_signature = sig
-                                        replied_signatures.add(sig)
-                                        await _handle_natural_language(
-                                            page, remainder, recent_bot_replies
-                                        )
-                                    else:
-                                        # Không gọi tên bot → bỏ qua
-                                        last_seen_signature = sig
+                    last_seen_user_message_by_chat[chat_key] = sig
+                    clean_latest = _normalize_text(latest).strip()
+
+                    # 1. Lệnh / (luôn xử lý)
+                    if clean_latest.startswith("/"):
+                        print(f"\n📩 [{chat_key}] Lệnh: {clean_latest}")
+                        last_processed_signature_by_chat[chat_key] = sig
+                        replied_signatures.add(sig)
+                        await _handle_command(page, clean_latest, recent_bot_replies)
+
+                    # 2. Gọi tên bot → phản hồi
+                    else:
+                        mentioned, remainder = _detect_mention(clean_latest)
+                        if mentioned and remainder:
+                            print(f"\n📩 [{chat_key}] Được gọi tên: {clean_latest}")
+                            print(f"   Nội dung: {remainder}")
+                            last_processed_signature_by_chat[chat_key] = sig
+                            replied_signatures.add(sig)
+                            await _handle_natural_language(
+                                page, remainder, recent_bot_replies
+                            )
+                        # else: không gọi tên → im lặng
 
             except Exception as e:
                 print(f"⚠️ Lỗi vòng lặp (thử lại sau 3s): {e}")
