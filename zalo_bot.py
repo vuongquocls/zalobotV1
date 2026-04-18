@@ -487,10 +487,10 @@ async def main():
             headless=HEADLESS,
             args=[
                 "--disable-blink-features=AutomationControlled",
-                "--start-maximized",
-                "--window-position=0,0",
+                "--window-size=1280,800",
             ],
-            no_viewport=True,
+            viewport={"width": 1280, "height": 800},
+            no_viewport=False,
         )
 
         page = browser.pages[0] if browser.pages else await browser.new_page()
@@ -504,35 +504,58 @@ async def main():
         try:
             await page.wait_for_selector(login_indicator, timeout=10000)
             print("✅ Đã đăng nhập Zalo!")
-
-            # Dọn popup
-            try:
-                restore = page.locator(
-                    "div[role='alertdialog'] button, button:has-text('Khôi phục'), button:has-text('Restore')"
-                ).first
-                if await restore.count() > 0:
-                    await restore.click(timeout=2000)
-            except:
-                pass
         except:
-            os.system(
-                'osascript -e \'display notification "Hãy quét mã QR trên cửa sổ Chrome!" '
-                'with title "Zalo Bot" sound name "Glass"\''
-            )
             print("=" * 50)
             print("⚠️  HÃY QUÉT MÃ QR TRÊN CỬA SỔ CHROME!")
-            if HEADLESS:
-                # Chờ một chút để QR code kịp hiện ra hoàn chỉnh
-                print("⏳ Đang chờ mã QR tải...")
-                await asyncio.sleep(5)
-                qr_path = os.path.join(BASE_DIR, "qr_code.png")
-                await page.screenshot(path=qr_path)
-                print(f"📸 Đã chụp ảnh mã QR tại: {qr_path}")
-                print("📩 Hãy tải file này về để quét mã!")
-            print("⚠️  Anh có 5 PHÚT để quét...")
-            print("=" * 50)
-            await page.wait_for_selector(login_indicator, timeout=300000)
-            print("✅ Đã đăng nhập sau khi quét QR!")
+            
+            # Vòng lặp chờ đăng nhập & cập nhật mã QR
+            start_time = time.time()
+            max_wait = 300  # 5 phút
+            
+            while time.time() - start_time < max_wait:
+                if HEADLESS:
+                    # Chờ mã QR hiện ra
+                    await asyncio.sleep(2)
+                    qr_path = os.path.join(BASE_DIR, "qr_code.png")
+                    
+                    # Thử chụp riêng vùng mã QR cho rõ nét
+                    try:
+                        # Zalo Web dùng canvas cho QR code
+                        qr_locator = page.locator("canvas, .qr-code, [class*='qr-code']").first
+                        if await qr_locator.count() > 0:
+                            await qr_locator.screenshot(path=qr_path)
+                            print(f"📸 Đã cập nhật mã QR (rõ nét) tại: {qr_path}")
+                        else:
+                            await page.screenshot(path=qr_path, clip={"x": 400, "y": 150, "width": 500, "height": 500})
+                            print(f"📸 Đã cập nhật mã QR (vùng trung tâm) tại: {qr_path}")
+                    except:
+                        await page.screenshot(path=qr_path)
+                        print(f"📸 Đã cập nhật mã QR (toàn màn hình) tại: {qr_path}")
+                        
+                    print("📩 Hãy tải lại file và quét mã nhanh (mã tự đổi sau 30s)!")
+                
+                # Check xem đã login chưa
+                try:
+                    # Chờ ngắn xem locator tìm kiếm có hiện ra không
+                    await page.wait_for_selector(login_indicator, timeout=30000) 
+                    print("\n✅ Đã đăng nhập thành công!")
+                    break
+                except:
+                    # Nếu chưa login, lặp lại để chụp mã QR mới
+                    pass
+            else:
+                print("❌ Đã quá thời gian chờ quét mã (5 phút).")
+                sys.exit(1)
+        
+        # Dọn popup sau khi login
+        try:
+            restore = page.locator(
+                "div[role='alertdialog'] button, button:has-text('Khôi phục'), button:has-text('Restore')"
+            ).first
+            if await restore.count() > 0:
+                await restore.click(timeout=2000)
+        except:
+            pass
 
         # Thử mở nhóm Zalo đã cấu hình
         if ZALO_GROUP_NAME:
