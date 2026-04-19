@@ -53,34 +53,19 @@ def _serialize_error(exc):
 async def _send_message(page, text: str):
     """Gửi tin nhắn — dùng keyboard.type() để trigger framework events đúng cách."""
     
-    # Bước 1: Click vào composer (ô nhập tin nhắn)
-    composer_clicked = False
-    for selector in ['#richInput', '[contenteditable="true"]', '#chatInput', 'textarea']:
-        try:
-            el = page.locator(selector).first
-            if await el.is_visible(timeout=2000):
-                await el.click()
-                composer_clicked = True
-                _log_event("send.composer_found", selector=selector)
-                break
-        except:
-            continue
-    
-    if not composer_clicked:
-        # Fallback: click vào vùng chuẩn của composer (dưới cùng giữa màn hình)
-        _log_event("send.fallback_click", note="clicking composer area by coords")
-        await page.mouse.click(640, 750)  # Khu vực composer trên viewport 1280x800
-        await asyncio.sleep(0.3)
-    
+    # Bước 1: Click vào vùng composer (dưới cùng giữa màn hình)
+    # Viewport 1280x800 -> click (640, 750)
+    _log_event("send.focus")
+    await page.mouse.click(640, 750) 
     await asyncio.sleep(0.3)
     
     # Bước 2: Xoá nội dung cũ (nếu có) bằng Ctrl+A rồi Delete
     await page.keyboard.press("Control+a")
     await page.keyboard.press("Delete")
     await asyncio.sleep(0.2)
-    # Bước 3: Đưa text vào clipboard bằng DOM + execCommand (trick an toàn nhất)
-    # Lý do: React Virtual DOM luôn bắt được sự kiện Paste, trong khi nhận phím gõ có thể bị lỗi tuỳ framework.
-    _log_event("send.clipboard_copy")
+    
+    # Bước 3: Paste text
+    _log_event("send.paste")
     await page.evaluate("""
         (text) => {
             const ta = document.createElement('textarea');
@@ -91,15 +76,15 @@ async def _send_message(page, text: str):
             document.body.removeChild(ta);
         }
     """, text)
-    await asyncio.sleep(0.2)
-    
-    # Bước 4: Paste (Control+V trên Linux/Xvfb)
     await page.keyboard.press("Control+v")
     await asyncio.sleep(0.5)
     
-    # Bước 5: Nhấn Enter để gửi
+    # Bước 4: Nhấn Enter để gửi
     await page.keyboard.press("Enter")
-    _log_event("send.done", method="copy_paste_enter")
+    
+    # Bước 5: Click nút Gửi (biểu tượng máy bay) dự phòng
+    await page.mouse.click(1240, 750) # Tọa độ nút gửi góc phải dưới
+    _log_event("send.done")
     
     await asyncio.sleep(1)
     return True
@@ -154,61 +139,39 @@ async def _capture_chat_state(page):
         return {}
 
 async def _find_unread_sidebar(page):
-    """Tìm index các chat chưa đọc bằng toạ độ hình học và đặc điểm physical."""
-    return await page.evaluate("""
-        () => {
-            const sidebar = Array.from(document.querySelectorAll('div'))
-                .find(d => {
-                    const r = d.getBoundingClientRect();
-                    return r.left < 50 && r.width > 200 && r.width < 450 && r.height > 400;
-                });
-            if (!sidebar) return [];
-            
-            const items = Array.from(sidebar.children).filter(c => c.getBoundingClientRect().height > 40);
-            return items.map((it, idx) => {
-                // Nhận dạng badge vật lý kiểu Zalo: 
-                // Hình tròn/viên thuốc (border-radius), nền màu đậm, chữ trắng, kích thước nhỏ
-                const hasBadge = Array.from(it.querySelectorAll('*')).some(el => {
-                    const r = el.getBoundingClientRect();
-                    if (r.width >= 10 && r.width <= 40 && r.height >= 10 && r.height <= 40) {
-                        const style = window.getComputedStyle(el);
-                        const isRound = style.borderRadius === '50%' || parseFloat(style.borderRadius) >= 8;
-                        const isSolidColor = style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent';
-                        const isWhiteText = style.color === 'rgb(255, 255, 255)' || style.color === '#ffffff';
-                        const hasNumber = /^\\d+\\+?$/.test(el.innerText ? el.innerText.trim() : '');
-                        const hasN = (el.innerText ? el.innerText.trim() : '') === 'N';
-                        
-                        if (isRound && isSolidColor && isWhiteText && (hasNumber || hasN)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                });
-                
-                return hasBadge ? idx : -1;
-            }).filter(i => i !== -1);
-        }
-    """)
+    """Sử dụng 'Chưa đọc' filter để tìm chat - SIÊU TIN CẬY."""
+    # 1. Click tab 'Chưa đọc'
+    try:
+        # Tọa độ tab 'Chưa đọc' khoảng (250, 110)
+        await page.mouse.click(250, 110)
+        await asyncio.sleep(0.5)
+        
+        # 2. Kiểm tra có chat nào trong danh sách không
+        has_unread = await page.evaluate("""
+            () => {
+                const sidebar = Array.from(document.querySelectorAll('div'))
+                    .find(d => {
+                        const r = d.getBoundingClientRect();
+                        return r.left < 50 && r.width > 200 && r.height > 400;
+                    });
+                return sidebar && sidebar.children.length > 0;
+            }
+        """)
+        
+        if has_unread:
+            return [0] # Luôn xử lý chat đầu tiên trong list đã lọc
+        
+        # 3. Quay lại tab 'Tất cả' (150, 110)
+        await page.mouse.click(150, 110)
+    except:
+        pass
+    return []
 
-async def _click_sidebar(page, idx):
-    """Click vào sidebar bằng toạ độ chuột thực."""
-    res = await page.evaluate("""
-        (targetIdx) => {
-            const sidebar = Array.from(document.querySelectorAll('div'))
-                .find(d => {
-                    const r = d.getBoundingClientRect();
-                    return r.left < 50 && r.width > 200 && r.height > 400;
-                });
-            const items = sidebar ? Array.from(sidebar.children).filter(c => c.getBoundingClientRect().height > 40) : [];
-            const it = items[targetIdx];
-            if (!it) return null;
-            const r = it.getBoundingClientRect();
-            return { x: r.left + r.width/2, y: r.top + r.height/2 };
-        }
-    """, idx)
-    if res:
-        await page.mouse.click(res['x'], res['y'])
-        await asyncio.sleep(1)
+async def _click_sidebar(page, index):
+    """Click vào chat đầu tiên của danh sách đã filter."""
+    # Khi đã ở tab 'Chưa đọc', chat đầu tiên ở tọa độ (200, 180)
+    await page.mouse.click(200, 180)
+    await asyncio.sleep(1)
 
 async def _navigate_to_group(page, name):
     """Mở nhóm bằng cách tìm kiếm và click kết quả đầu tiên."""
