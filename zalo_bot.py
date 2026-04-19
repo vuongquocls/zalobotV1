@@ -51,43 +51,47 @@ def _serialize_error(exc):
     return {"type": type(exc).__name__, "message": str(exc)}
 
 async def _send_message(page, text: str):
-    """Gửi tin nhắn — dùng keyboard.type() để trigger framework events đúng cách."""
-    
-    # Bước 1: Click vào vùng composer (dưới cùng giữa màn hình)
-    # Viewport 1280x800 -> click (640, 750)
-    _log_event("send.focus")
-    await page.mouse.click(640, 750) 
-    await asyncio.sleep(0.3)
-    
-    # Bước 2: Xoá nội dung cũ (nếu có) bằng Ctrl+A rồi Delete
-    await page.keyboard.press("Control+a")
-    await page.keyboard.press("Delete")
-    await asyncio.sleep(0.2)
-    
-    # Bước 3: Paste text
-    _log_event("send.paste")
-    await page.evaluate("""
-        (text) => {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-        }
-    """, text)
-    await page.keyboard.press("Control+v")
-    await asyncio.sleep(0.5)
-    
-    # Bước 4: Nhấn Enter để gửi
-    await page.keyboard.press("Enter")
-    
-    # Bước 5: Click nút Gửi (biểu tượng máy bay) dự phòng
-    await page.mouse.click(1240, 750) # Tọa độ nút gửi góc phải dưới
-    _log_event("send.done")
-    
-    await asyncio.sleep(1)
-    return True
+    """Gửi tin nhắn — dùng cơ chế Paste 'như người thật' để qua mặt Zalo."""
+    _log_event("reply.start", length=len(text))
+    try:
+        # Bước 1: Ép focus vào vùng composer (tọa độ chuẩn 1280x800)
+        # Click vào khoảng giữa-dưới để đảm bảo ô nhập liệu nhận focus
+        await page.mouse.click(640, 750) 
+        await asyncio.sleep(0.5)
+        
+        # Bước 2: Xóa sạch composer cũ (phòng hờ tin nhắn cũ chưa gửi)
+        await page.keyboard.press("Control+a")
+        await page.keyboard.press("Delete")
+        await asyncio.sleep(0.3)
+        
+        # Bước 3: Copy text vào clipboard ảo
+        await page.evaluate("""
+            (t) => {
+                const ta = document.createElement('textarea');
+                ta.value = t;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+            }
+        """, text)
+        await asyncio.sleep(0.2)
+        
+        # Bước 4: Paste (Ctrl+V) — Thao tác này LUÔN trigger React State của Zalo
+        await page.keyboard.press("Control+v")
+        await asyncio.sleep(0.8)
+        
+        # Bước 5: Nhấn Enter để gửi
+        await page.keyboard.press("Enter")
+        
+        # Bước 6: Click nút Gửi (biểu tượng máy bay) dự phòng (tọa độ 1240, 750)
+        await page.mouse.click(1240, 750)
+        
+        _log_event("reply.sent", method="paste_mode")
+        return True
+    except Exception as e:
+        _log_event("reply.failed", error=str(e))
+        return False
 
 async def _capture_chat_state(page):
     """Trích xuất trạng thái chat (Visual Heuristic). Tối ưu hoá cho VPS."""
@@ -138,54 +142,58 @@ async def _capture_chat_state(page):
     except:
         return {}
 
-async def _find_unread_sidebar(page):
-    """Sử dụng 'Chưa đọc' filter để tìm chat - SIÊU TIN CẬY."""
-    # 1. Click tab 'Chưa đọc'
-    try:
-        # Tọa độ tab 'Chưa đọc' khoảng (250, 110)
-        await page.mouse.click(250, 110)
-        await asyncio.sleep(0.5)
-        
-        # 2. Kiểm tra có chat nào trong danh sách không
-        has_unread = await page.evaluate("""
-            () => {
-                const sidebar = Array.from(document.querySelectorAll('div'))
-                    .find(d => {
-                        const r = d.getBoundingClientRect();
-                        return r.left < 50 && r.width > 200 && r.height > 400;
-                    });
-                return sidebar && sidebar.children.length > 0;
+async def _scan_for_red_badges(page):
+    """'Con mắt chi phối': Quét sidebar tìm bất kỳ điểm ĐỎ nào (unread badges)."""
+    return await page.evaluate("""
+        () => {
+            const results = [];
+            // Sidebar chat thường nằm ở X: 70..350
+            const els = document.querySelectorAll('div, span');
+            for (const el of els) {
+                const r = el.getBoundingClientRect();
+                // Chỉ quét vùng sidebar
+                if (r.left > 60 && r.left < 360 && r.top > 120 && r.top < 800) {
+                    const style = window.getComputedStyle(el);
+                    const bg = style.backgroundColor;
+                    // Nhận diện 'Màu Đỏ' của Zalo (thường là rgb(255, 66, 78) hoặc tương tự)
+                    // Logic: Red cao, Green/Blue thấp
+                    const match = bg.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/);
+                    if (match) {
+                        const r_val = parseInt(match[1]);
+                        const g_val = parseInt(match[2]);
+                        const b_val = parseInt(match[3]);
+                        if (r_val > 200 && g_val < 100 && b_val < 100) {
+                            // Đây là unread badge! Lấy tọa độ tâm của ITEM chứa badge này
+                            // Thường badge nhỏ, item to. Ta lấy cha của badge.
+                            let parent = el.parentElement;
+                            while (parent && parent.getBoundingClientRect().height < 40) {
+                                parent = parent.parentElement;
+                            }
+                            if (parent) {
+                                const pRect = parent.getBoundingClientRect();
+                                results.push({
+                                    x: pRect.left + pRect.width / 2,
+                                    y: pRect.top + pRect.height / 2,
+                                    text: el.innerText
+                                });
+                            }
+                        }
+                    }
+                }
             }
-        """)
-        
-        if has_unread:
-            return [0] # Luôn xử lý chat đầu tiên trong list đã lọc
-        
-        # 3. Quay lại tab 'Tất cả' (150, 110)
-        await page.mouse.click(150, 110)
-    except:
-        pass
-    return []
-
-async def _click_sidebar(page, index):
-    """Click vào chat đầu tiên của danh sách đã filter."""
-    # Khi đã ở tab 'Chưa đọc', chat đầu tiên ở tọa độ (200, 180)
-    await page.mouse.click(200, 180)
-    await asyncio.sleep(1)
-
-async def _navigate_to_group(page, name):
-    """Mở nhóm bằng cách tìm kiếm và click kết quả đầu tiên."""
-    if not name: return False
-    try:
-        await page.mouse.click(150, 40) # Click vùng search search
-        await page.keyboard.type(name, delay=50)
-        await asyncio.sleep(2)
-        # Click kết quả đầu tiên trong danh sách search
-        await page.mouse.click(200, 150)
-        await asyncio.sleep(1)
-        return True
-    except:
-        return False
+            // Loại bỏ trùng lặp (nhiều element đỏ trong cùng 1 item)
+            const unique = [];
+            const seenY = new Set();
+            for (const res of results) {
+                const roundedY = Math.round(res.y / 10) * 10;
+                if (!seenY.has(roundedY)) {
+                    unique.push(res);
+                    seenY.add(roundedY);
+                }
+            }
+            return unique;
+        }
+    """)
 
 async def _handle_natural_language(page, text, chat_type):
     """Phản hồi bằng AI dựa trên não bộ Quy chế Yok Đôn."""
@@ -198,77 +206,51 @@ async def _handle_natural_language(page, text, chat_type):
         _log_event("ai.error", error=_serialize_error(e))
 
 async def main():
-    _log_event("bot.starting", version="Firefox-Edition")
+    _log_event("bot.starting", version="Heuristic-Eye-Edition")
     async with async_playwright() as p:
-        # FIREFOX — tránh bị Zalo phát hiện "Chrome for Testing"
         browser = await p.firefox.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
             headless=HEADLESS,
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
-            locale="vi-VN",
         )
         page = browser.pages[0]
         await page.goto(ZALO_URL)
-        
-        # Chờ login
         await asyncio.sleep(5)
-        _log_event("session.wait", help="Vui lòng quét mã QR nếu chưa login")
         
-        last_reminder_day = ""
         last_processed_sig = {}
-        last_reply_time = {}
 
         while True:
             try:
-                now = datetime.now()
-                # 1. Nhắc việc định kỳ (8h)
-                if now.hour == REMINDER_HOUR and now.minute == REMINDER_MINUTE and now.strftime("%D") != last_reminder_day:
-                    await _navigate_to_group(page, ZALO_GROUP_NAME)
-                    all_tasks = fetch_all_tasks()
-                    msg = build_daily_reminder(all_tasks) # Simplified for this demo
-                    await _send_message(page, msg)
-                    last_reminder_day = now.strftime("%D")
-
-                # 2. Xử lý tin chưa đọc từ Sidebar
-                unreads = await _find_unread_sidebar(page)
+                # 1. Quét tìm chấm đỏ unread
+                badges = await _scan_for_red_badges(page)
                 
-                # Check thêm chat ĐANG MỞ hiện tại (tránh việc noVNC mở sẵn làm mất badge)
-                targets = list(unreads)
-                if not targets:
-                    targets = [999] # 999 là mã giả để báo hiệu "check active chat"
+                # Nếu không thấy badge nào, check chat ĐANG MỞ
+                targets = badges if badges else [{"x": 640, "y": 400, "is_active": True}]
                 
-                for idx in targets:
-                    if idx != 999:
-                        await _click_sidebar(page, idx)
+                for badge in targets:
+                    if "is_active" not in badge:
+                        # Click vào chat có chấm đỏ
+                        await page.mouse.click(badge["x"], badge["y"])
+                        await asyncio.sleep(1.5)
                     
                     state = await _capture_chat_state(page)
                     incoming = state.get("incomingMessages", [])
+                    chat_name = state.get("chatName", "Unknown")
                     
                     if incoming:
                         latest = incoming[-1]
-                        chat_key = state.get("chatName", "temp")
+                        sig = f"{chat_name}:{latest}"
                         
-                        # Log vắn tắt để debug
-                        _log_event("chat.capture", name=chat_key, last_msg=latest[:30], type=state["chatType"])
-                        
-                        # Điều kiện trả lời: Group có tag bot, hoặc chat cá nhân
-                        is_personal = state["chatType"] == "personal"
-                        has_hint = BOT_HINT.lower() in latest.lower()
-                        should_reply = is_personal or has_hint
-                        
-                        # Cooldown & Dedupe
-                        sig = hash(latest)
-                        if should_reply and last_processed_sig.get(chat_key) != sig:
-                            if time.time() - last_reply_time.get(chat_key, 0) > REPLY_COOLDOWN_SECONDS:
-                                await _handle_natural_language(page, latest, state["chatType"])
-                                last_processed_sig[chat_key] = sig
-                                last_reply_time[chat_key] = time.time()
+                        if sig != last_processed_sig.get(chat_name):
+                            _log_event("msg.new", chat=chat_name, text=latest)
+                            await _handle_natural_language(page, latest, state.get("chatType", "personal"))
+                            last_processed_sig[chat_name] = sig
 
-                await asyncio.sleep(5) # Poll mỗi 5s
+                await asyncio.sleep(2)  # Check mỗi 2s để đảm bảo nhạy bén như mắt người
             except Exception as e:
-                _log_event("main.error", error=_serialize_error(e))
-                await asyncio.sleep(10)
+                _log_event("main.loop.error", error=str(e))
+                await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
