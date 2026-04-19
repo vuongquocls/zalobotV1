@@ -78,16 +78,28 @@ async def _send_message(page, text: str):
     await page.keyboard.press("Control+a")
     await page.keyboard.press("Delete")
     await asyncio.sleep(0.2)
+    # Bước 3: Đưa text vào clipboard bằng DOM + execCommand (trick an toàn nhất)
+    # Lý do: React Virtual DOM luôn bắt được sự kiện Paste, trong khi nhận phím gõ có thể bị lỗi tuỳ framework.
+    _log_event("send.clipboard_copy")
+    await page.evaluate("""
+        (text) => {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+    """, text)
+    await asyncio.sleep(0.2)
     
-    # Bước 3: GÕ TỪNG KÝ TỰ bằng keyboard.type() — QUAN TRỌNG!
-    # Đây là cách DUY NHẤT trigger được event listener của Zalo
-    _log_event("send.typing", length=len(text))
-    await page.keyboard.type(text, delay=10)  # 10ms/ký tự
+    # Bước 4: Paste (Control+V trên Linux/Xvfb)
+    await page.keyboard.press("Control+v")
     await asyncio.sleep(0.5)
     
-    # Bước 4: Nhấn Enter để gửi
+    # Bước 5: Nhấn Enter để gửi
     await page.keyboard.press("Enter")
-    _log_event("send.done", method="keyboard_type_enter")
+    _log_event("send.done", method="copy_paste_enter")
     
     await asyncio.sleep(1)
     return True
@@ -142,7 +154,7 @@ async def _capture_chat_state(page):
         return {}
 
 async def _find_unread_sidebar(page):
-    """Tìm index các chat chưa đọc bằng toạ độ hình học."""
+    """Tìm index các chat chưa đọc bằng toạ độ hình học và đặc điểm physical."""
     return await page.evaluate("""
         () => {
             const sidebar = Array.from(document.querySelectorAll('div'))
@@ -154,10 +166,23 @@ async def _find_unread_sidebar(page):
             
             const items = Array.from(sidebar.children).filter(c => c.getBoundingClientRect().height > 40);
             return items.map((it, idx) => {
-                // Phổ rộng: badge đỏ, emoji báo unread, hoặc class name chứa unread/count
-                const hasBadge = !!it.querySelector('[class*="unread"], [class*="badge"], [class*="count"], .cnt, .v-badge');
-                const hasUnreadSymbol = it.innerText.includes('●') || it.innerText.includes('○');
-                return (hasBadge || hasUnreadSymbol) ? idx : -1;
+                // Nhận dạng badge vật lý: thẻ div/span nhỏ, chứa số, nằm trong row
+                const hasBadge = Array.from(it.querySelectorAll('*')).some(el => {
+                    const r = el.getBoundingClientRect();
+                    if (r.width >= 10 && r.width <= 40 && r.height >= 10 && r.height <= 40) {
+                        const txt = el.innerText ? el.innerText.trim() : '';
+                        if (/^\\d+\\+?$/.test(txt) || txt === 'N') {
+                            const style = window.getComputedStyle(el);
+                            // Thường badge sẽ có màu đỏ hoặc tương phản cao (rgb khác rgba(0,0,0,0))
+                            if (style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.color !== 'rgba(0, 0, 0, 0)') {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                });
+                
+                return hasBadge ? idx : -1;
             }).filter(i => i !== -1);
         }
     """)
