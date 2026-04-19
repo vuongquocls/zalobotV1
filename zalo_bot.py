@@ -251,6 +251,19 @@ def _classify_ignored_message(
                 return "bot_reply_echo"
             if len(norm) >= 20 and len(prev) >= 20 and norm[:20] == prev[:20]:
                 return "bot_reply_echo"
+            # Substring matching: nếu tin chat là 1 phần của reply bot → echo
+            if len(norm) >= 10 and norm in prev:
+                return "bot_reply_echo"
+
+    # Chặn BOT header lặp lại
+    bot_header_markers = [
+        "bot nhắc việc truyền thông",
+        "bot nhac viec truyen thong",
+        "nhắc việc truyền thông -",
+        "nhac viec truyen thong -",
+    ]
+    if any(marker in compact for marker in bot_header_markers):
+        return "bot_reply_echo"
 
     return None
 
@@ -356,15 +369,31 @@ def _detect_intent(text: str) -> str:
     lower = text.lower()
     lower_na = _remove_accents(lower)
 
+    # Help — kiểm tra TRƯỚC nhacviec để tránh 'có gì' match nhầm
+    help_kws = [
+        'hướng dẫn', 'huong dan', 'help', 'làm gì được', 'lam gi duoc',
+        'biết làm gì', 'biet lam gi', 'có thể làm gì', 'co the lam gi',
+        'làm được gì', 'lam duoc gi', 'có gì', 'co gi',
+        'chức năng', 'chuc nang', 'dùng sao', 'dung sao',
+    ]
+    if any(k in lower or k in lower_na for k in help_kws):
+        return 'help'
+
     # Nhắc việc / lịch đăng bài
     nhac_kws = [
         'nhắc việc', 'nhac viec', 'có lịch', 'co lich', 'lịch đăng',
-        'lich dang', 'hôm nay', 'hom nay', 'đăng bài', 'dang bai',
-        'công việc', 'cong viec', 'việc gì', 'viec gi', 'có gì',
-        'co gi', 'nhắc', 'nhac', 'deadline', 'hạn', 'han',
-        'phải làm', 'phai lam', 'cần làm', 'can lam',
+        'lich dang', 'đăng bài', 'dang bai',
+        'công việc', 'cong viec', 'việc gì', 'viec gi',
+        'nhắc', 'nhac', 'deadline', 'phải làm', 'phai lam',
+        'cần làm', 'can lam',
     ]
+    # 'hôm nay' chỉ match khi đi kèm từ liên quan đến việc
+    hom_nay_context = ['việc', 'viec', 'lịch', 'lich', 'đăng', 'dang', 'làm', 'lam', 'bài', 'bai']
+    has_hom_nay = 'hôm nay' in lower or 'hom nay' in lower_na
+    has_work_context = any(ctx in lower or ctx in lower_na for ctx in hom_nay_context)
     if any(k in lower or k in lower_na for k in nhac_kws):
+        return 'nhacviec'
+    if has_hom_nay and has_work_context:
         return 'nhacviec'
 
     # Xem danh sách
@@ -383,11 +412,6 @@ def _detect_intent(text: str) -> str:
     ]
     if any(k in lower or k in lower_na for k in bai_kws):
         return 'hotrobai'
-
-    # Help
-    help_kws = ['hướng dẫn', 'huong dan', 'help', 'làm gì được', 'lam gi duoc', 'biết làm gì', 'biet lam gi']
-    if any(k in lower or k in lower_na for k in help_kws):
-        return 'help'
 
     # Mặc định: hỏi đáp tự do
     return 'hoidap'
@@ -508,7 +532,7 @@ async def _capture_chat_state(page) -> dict:
     """Đọc trạng thái chat hiện tại theo DOM thực tế, hạn chế phụ thuộc class name của Zalo."""
     try:
         state = await page.evaluate(
-            """
+            r"""
             ({ groupName, inputSelectors, sidebarSelectors }) => {
                 const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
                 const lower = (value) => normalize(value).toLowerCase();
@@ -637,6 +661,7 @@ async def _capture_chat_state(page) -> dict:
                 const messageSeen = new Set();
                 const messageTop = headerCutoff + 4;
                 const messageBottom = composerRect ? composerRect.top - 4 : rootRect.bottom - 4;
+                const chatCenterX = rootRect.left + rootRect.width * 0.5;
                 for (const el of elements) {
                     if (!visible(el)) continue;
                     if (composer && composer.contains(el)) continue;
@@ -647,23 +672,32 @@ async def _capture_chat_state(page) -> dict:
                     if (rect.left < rootRect.left + Math.min(28, rootRect.width * 0.04)) continue;
                     const text = normalize(el.innerText || el.textContent || '');
                     if (!text || text.length > 1000) continue;
-                    if (/^\\d{1,2}:\\d{2}$/.test(text)) continue;
+                    if (/^\d{1,2}:\d{2}$/.test(text)) continue;
                     if (headerSeen.has(text)) continue;
                     const dedupeKey = `${Math.round(rect.top)}:${Math.round(rect.left)}:${text}`;
                     if (messageSeen.has(dedupeKey)) continue;
                     messageSeen.add(dedupeKey);
+                    // Phân biệt tin gửi/nhận: tin nằm bên phải center = outgoing (me)
+                    const msgCenterX = rect.left + rect.width * 0.5;
+                    const isMe = msgCenterX > chatCenterX;
                     messages.push({
                         text,
                         top: Math.round(rect.top),
                         left: Math.round(rect.left),
+                        isMe,
                     });
                 }
 
                 messages.sort((a, b) => (a.top - b.top) || (a.left - b.left));
-                const flattened = [];
+                // Tách tin incoming (người khác) vs outgoing (me)
+                const incomingMessages = [];
+                const allFlattened = [];
                 for (const item of messages) {
-                    if (flattened[flattened.length - 1] === item.text) continue;
-                    flattened.push(item.text);
+                    if (allFlattened[allFlattened.length - 1] === item.text) continue;
+                    allFlattened.push(item.text);
+                    if (!item.isMe) {
+                        incomingMessages.push(item.text);
+                    }
                 }
 
                 return {
@@ -677,7 +711,8 @@ async def _capture_chat_state(page) -> dict:
                     headerTexts,
                     activeSidebarText,
                     activeSidebarName,
-                    messages: flattened.slice(-20),
+                    messages: allFlattened.slice(-20),
+                    incomingMessages: incomingMessages.slice(-20),
                     rootRect: {
                         top: Math.round(rootRect.top),
                         left: Math.round(rootRect.left),
@@ -1071,6 +1106,8 @@ async def main():
         replied_signatures: set[str] = set()
         last_seen_user_message_by_chat: dict[str, str] = {}
         last_processed_signature_by_chat: dict[str, str] = {}
+        last_reply_time_by_chat: dict[str, float] = {}  # Cooldown chống spam
+        REPLY_COOLDOWN_SECONDS = 8  # Tối thiểu 8 giây giữa 2 lần reply cùng chat
         scan_counter = 0  # Đếm vòng lặp để quét unread định kỳ
         health_counter = 0
 
@@ -1119,7 +1156,8 @@ async def main():
         ):
             """Xử lý tin nhắn trong chat đang mở."""
             chat_state = await _capture_chat_state(page)
-            context_msgs = chat_state.get("messages", [])
+            # Ưu tiên dùng incomingMessages (chỉ tin người khác gửi)
+            context_msgs = chat_state.get("incomingMessages") or chat_state.get("messages", [])
             if not context_msgs:
                 return
 
@@ -1261,11 +1299,24 @@ async def main():
                 )
 
                 if should_respond:
+                    # Cooldown chống spam: không reply 2 lần liên tiếp trong 8 giây
+                    now_ts = time.time()
+                    last_reply = last_reply_time_by_chat.get(chat_key, 0)
+                    if now_ts - last_reply < REPLY_COOLDOWN_SECONDS:
+                        _log_event(
+                            "message.skip",
+                            chat_key=chat_key,
+                            reason="cooldown_active",
+                            seconds_since_last=round(now_ts - last_reply, 1),
+                        )
+                        return
+
                     if not mentioned:
                         remainder = clean_latest
 
                     last_processed_signature_by_chat[chat_key] = sig
                     replied_signatures.add(sig)
+                    last_reply_time_by_chat[chat_key] = time.time()
                     try:
                         await _handle_natural_language(
                             page, remainder, recent_bot_replies
