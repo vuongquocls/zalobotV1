@@ -10,12 +10,12 @@ echo "==========================="
 echo ""
 
 ssh -t -o StrictHostKeyChecking=no root@103.72.56.225 '
-echo "=== 1/4 Tăng màn hình ảo lên 2918x1590 ==="
+echo "=== 1/4 Tăng màn hình ảo lên 1280x800 ==="
 pkill -9 Xvfb 2>/dev/null
 sleep 1
-Xvfb :99 -screen 0 2918x1590x24 -ac &
+Xvfb :99 -screen 0 1280x800x24 -ac &
 sleep 2
-echo "Xvfb restarted at 2918x1590"
+echo "Xvfb restarted at 1280x800"
 
 echo "=== 2/4 Restart x11vnc ==="
 pkill -9 x11vnc 2>/dev/null

@@ -261,7 +261,8 @@ async def main():
         browser = await p.firefox.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
             headless=HEADLESS,
-            viewport={"width": 2918, "height": 1590},
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
             locale="vi-VN",
         )
         page = browser.pages[0]
