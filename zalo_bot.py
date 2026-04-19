@@ -255,24 +255,19 @@ async def _handle_natural_language(page, text, chat_type):
         _log_event("ai.error", error=_serialize_error(e))
 
 async def main():
-    _log_event("bot.starting", version="Refactored")
+    _log_event("bot.starting", version="Firefox-Edition")
     async with async_playwright() as p:
-        # STEALTH LAUNCH
-        browser = await p.chromium.launch_persistent_context(
+        # FIREFOX — tránh bị Zalo phát hiện "Chrome for Testing"
+        browser = await p.firefox.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
             headless=HEADLESS,
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            args=["--disable-blink-features=AutomationControlled", "--start-maximized", "--disable-infobars"],
-            viewport={"width": 1920, "height": 1080},
-            ignore_default_args=["--enable-automation"]
+            viewport={"width": 1400, "height": 900},
+            locale="vi-VN",
         )
         page = browser.pages[0]
         await page.goto(ZALO_URL)
         
-        # Zoom nhỏ lại để hiện đủ giao diện (kể cả ô chat ở dưới cùng)
-        await page.evaluate('document.body.style.zoom = "0.85"')
-        
-        # Chờ login (300s)
+        # Chờ login
         await asyncio.sleep(5)
         _log_event("session.wait", help="Vui lòng quét mã QR nếu chưa login")
         
