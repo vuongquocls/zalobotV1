@@ -166,17 +166,20 @@ async def _find_unread_sidebar(page):
             
             const items = Array.from(sidebar.children).filter(c => c.getBoundingClientRect().height > 40);
             return items.map((it, idx) => {
-                // Nhận dạng badge vật lý: thẻ div/span nhỏ, chứa số, nằm trong row
+                // Nhận dạng badge vật lý kiểu Zalo: 
+                // Hình tròn/viên thuốc (border-radius), nền màu đậm, chữ trắng, kích thước nhỏ
                 const hasBadge = Array.from(it.querySelectorAll('*')).some(el => {
                     const r = el.getBoundingClientRect();
                     if (r.width >= 10 && r.width <= 40 && r.height >= 10 && r.height <= 40) {
-                        const txt = el.innerText ? el.innerText.trim() : '';
-                        if (/^\\d+\\+?$/.test(txt) || txt === 'N') {
-                            const style = window.getComputedStyle(el);
-                            // Thường badge sẽ có màu đỏ hoặc tương phản cao (rgb khác rgba(0,0,0,0))
-                            if (style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.color !== 'rgba(0, 0, 0, 0)') {
-                                return true;
-                            }
+                        const style = window.getComputedStyle(el);
+                        const isRound = style.borderRadius === '50%' || parseFloat(style.borderRadius) >= 8;
+                        const isSolidColor = style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent';
+                        const isWhiteText = style.color === 'rgb(255, 255, 255)' || style.color === '#ffffff';
+                        const hasNumber = /^\\d+\\+?$/.test(el.innerText ? el.innerText.trim() : '');
+                        const hasN = (el.innerText ? el.innerText.trim() : '') === 'N';
+                        
+                        if (isRound && isSolidColor && isWhiteText && (hasNumber || hasN)) {
+                            return true;
                         }
                     }
                     return false;
