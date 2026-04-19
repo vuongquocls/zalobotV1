@@ -1117,43 +1117,109 @@ async def main():
         health_counter = 0
 
         async def _find_unread_sidebar_indices() -> list[int]:
-            """Dùng JS tìm tất cả sidebar items có badge chưa đọc."""
+            """Dùng JS visual heuristic tìm sidebar items có tin chưa đọc."""
             try:
-                indices = await page.evaluate(r"""
+                result = await page.evaluate(r"""
                     () => {
+                        // ===== BƯỚC 1: Tìm sidebar container (bảng bên trái, width 250-450px) =====
+                        const allDivs = [...document.querySelectorAll('div')];
+                        let sidebarContainer = null;
+                        let sidebarItems = [];
+                        
+                        // Tìm container có nhiều conversation items nhất trong panel trái
+                        for (const div of allDivs) {
+                            const rect = div.getBoundingClientRect();
+                            // Sidebar nằm bên trái, chiều rộng 250-500px, chiều cao > 300px
+                            if (rect.left > 100 || rect.width < 200 || rect.width > 500 || rect.height < 300) continue;
+                            
+                            // Tìm các child trực tiếp có chiều cao phù hợp 1 conversation item (50-100px)
+                            const children = [...div.children].filter(c => {
+                                const cr = c.getBoundingClientRect();
+                                return cr.height > 40 && cr.height < 120 && cr.width > 200;
+                            });
+                            
+                            if (children.length > sidebarItems.length) {
+                                sidebarContainer = div;
+                                sidebarItems = children;
+                            }
+                        }
+                        
+                        if (!sidebarItems.length) {
+                            return { debug: 'no_sidebar_items_found', itemCount: 0, results: [] };
+                        }
+                        
+                        // ===== BƯỚC 2: Quét từng item tìm badge chưa đọc =====
                         const results = [];
-                        // Tìm tất cả conversation items trong sidebar
-                        const items = document.querySelectorAll(
-                            '[id*="conversation-list"] > div, ' +
-                            '.conv-list > div, ' +
-                            'div[class*="conv-item"], ' +
-                            'div.msg-item'
-                        );
-                        items.forEach((item, idx) => {
-                            // Tìm badge chưa đọc: có thể là dot hoặc số
-                            const badges = item.querySelectorAll(
-                                '.unread-badge, .count-badge, [class*="unread"], [class*="badge"], ' +
-                                '[class*="count"], span.num, .dot-unread, .dot'
-                            );
-                            for (const b of badges) {
-                                const text = (b.textContent || '').trim();
-                                const className = typeof b.className === 'string' ? b.className : '';
-                                const style = window.getComputedStyle(b);
-                                const isRed = style.backgroundColor.includes('rgb(255,') || style.backgroundColor.includes('rgb(244,');
-
-                                if (/^\d+$/.test(text) || 
-                                    className.includes('unread') ||
-                                    className.includes('badge') ||
-                                    isRed) {
-                                    results.push(idx);
+                        const debugItems = [];
+                        
+                        for (let idx = 0; idx < sidebarItems.length; idx++) {
+                            const item = sidebarItems[idx];
+                            const itemText = (item.innerText || '').replace(/\s+/g, ' ').trim().substring(0, 80);
+                            
+                            // Tìm badge: element nhỏ chứa số hoặc có màu nổi bật
+                            const allElements = item.querySelectorAll('*');
+                            let hasUnread = false;
+                            
+                            for (const el of allElements) {
+                                const elRect = el.getBoundingClientRect();
+                                // Badge thường nhỏ (< 30px) và tròn hoặc vuông
+                                if (elRect.width > 35 || elRect.height > 35) continue;
+                                if (elRect.width < 6 || elRect.height < 6) continue;
+                                
+                                const text = (el.textContent || '').trim();
+                                const style = window.getComputedStyle(el);
+                                const bg = style.backgroundColor;
+                                
+                                // Kiểm tra: có số (1-99) hoặc nền đỏ/cam/xanh nổi bật
+                                const isNumber = /^\d{1,2}$/.test(text);
+                                const isBright = bg && (
+                                    bg.includes('rgb(255,') || bg.includes('rgb(244,') || 
+                                    bg.includes('rgb(231,') || bg.includes('rgb(220,') ||
+                                    bg.includes('rgb(66,') || bg.includes('rgb(0,')
+                                );
+                                // Hoặc element có border-radius tròn và visible
+                                const isRound = parseFloat(style.borderRadius) > 5;
+                                
+                                if (isNumber || (isBright && isRound && elRect.width >= 8)) {
+                                    hasUnread = true;
                                     break;
                                 }
                             }
-                        });
-                        return results;
+                            
+                            if (hasUnread) {
+                                results.push(idx);
+                            }
+                            
+                            // Chỉ log 10 item đầu
+                            if (idx < 10) {
+                                debugItems.push({ idx, text: itemText, unread: hasUnread });
+                            }
+                        }
+                        
+                        return { 
+                            debug: 'scan_complete',
+                            itemCount: sidebarItems.length, 
+                            results, 
+                            items: debugItems
+                        };
                     }
                 """)
-                return indices or []
+                
+                indices = result.get("results", []) if isinstance(result, dict) else []
+                item_count = result.get("itemCount", 0) if isinstance(result, dict) else 0
+                
+                # Log chi tiết để debug
+                if isinstance(result, dict):
+                    _log_event(
+                        "sidebar.scan_result",
+                        debug=result.get("debug"),
+                        item_count=item_count,
+                        unread_count=len(indices),
+                        unread_indices=indices,
+                        sample_items=result.get("items", [])[:5],
+                    )
+                
+                return indices
             except Exception as exc:
                 _log_event("exception", scope="find_unread_sidebar_indices", error=_serialize_error(exc))
                 return []
@@ -1384,19 +1450,42 @@ async def main():
 
                         for idx in unread_indices:
                             try:
-                                # Click vào sidebar item có badge
-                                items = await page.locator(
-                                    ", ".join(SIDEBAR_ITEM_SELECTORS)
-                                ).all()
+                                # Click vào sidebar item bằng cùng heuristic JS
+                                clicked = await page.evaluate(r"""
+                                    (targetIdx) => {
+                                        const allDivs = [...document.querySelectorAll('div')];
+                                        let sidebarItems = [];
+                                        
+                                        for (const div of allDivs) {
+                                            const rect = div.getBoundingClientRect();
+                                            if (rect.left > 100 || rect.width < 200 || rect.width > 500 || rect.height < 300) continue;
+                                            const children = [...div.children].filter(c => {
+                                                const cr = c.getBoundingClientRect();
+                                                return cr.height > 40 && cr.height < 120 && cr.width > 200;
+                                            });
+                                            if (children.length > sidebarItems.length) {
+                                                sidebarItems = children;
+                                            }
+                                        }
+                                        
+                                        if (targetIdx < sidebarItems.length) {
+                                            sidebarItems[targetIdx].click();
+                                            return true;
+                                        }
+                                        return false;
+                                    }
+                                """, idx)
 
-                                if idx < len(items):
-                                    await items[idx].click(force=True)
+                                if clicked:
+                                    _log_event("sidebar.clicked_item", index=idx)
                                     await asyncio.sleep(1.5)
 
                                     await _process_chat(
                                         is_unread_click=True,
                                         recent_bot_replies=recent_bot_replies,
                                     )
+                                else:
+                                    _log_event("sidebar.click_failed", index=idx, reason="item_not_found")
                             except Exception as e:
                                 _log_event("exception", scope="scan_unread_chat", chat_index=idx, error=_serialize_error(e))
                                 continue
