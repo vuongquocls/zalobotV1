@@ -36,6 +36,8 @@ ZALO_GROUP_NAME = os.getenv("ZALO_GROUP_NAME", "Truyền thông Yok Đôn")
 # Thể thức chuyên gia: Nhân Viên Mới Yok Đôn
 BOT_HINT = "Nhân Viên Mới Yok Đôn"
 REPLY_COOLDOWN_SECONDS = 8
+REMINDER_HOUR = int(os.getenv("REMINDER_HOUR", "8"))
+REMINDER_MINUTE = int(os.getenv("REMINDER_MINUTE", "0"))
 
 # === Selectors (Visual Heuristic fallback) ===
 LOGIN_INDICATOR_SELECTORS = ["#contact-search-input", "input[placeholder*='Tìm kiếm']", "div[data-id]"]
@@ -199,11 +201,14 @@ async def main():
             headless=HEADLESS,
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             args=["--disable-blink-features=AutomationControlled", "--start-maximized", "--disable-infobars"],
-            viewport={"width": 1280, "height": 800},
+            viewport={"width": 1920, "height": 1080},
             ignore_default_args=["--enable-automation"]
         )
         page = browser.pages[0]
         await page.goto(ZALO_URL)
+        
+        # Zoom nhỏ lại để hiện đủ giao diện (kể cả ô chat ở dưới cùng)
+        await page.evaluate('document.body.style.zoom = "0.85"')
         
         # Chờ login (300s)
         await asyncio.sleep(5)
