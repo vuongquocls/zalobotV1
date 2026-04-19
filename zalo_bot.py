@@ -51,33 +51,95 @@ def _serialize_error(exc):
     return {"type": type(exc).__name__, "message": str(exc)}
 
 async def _send_message(page, text: str):
-    """Gửi tin nhắn bằng cách lấy toạ độ ô chat và click thực."""
-    try:
-        res = await page.evaluate("""
-            (selectors) => {
-                const el = selectors.map(s => document.querySelector(s)).find(e => {
-                    if (!e) return false;
-                    const r = e.getBoundingClientRect();
-                    return r.width > 30 && r.height > 10 && window.getComputedStyle(e).visibility !== 'hidden';
-                });
-                if (!el) return null;
-                el.scrollIntoView({block: 'center'});
+    """Gửi tin nhắn bằng nhiều chiến lược (bypass composer ẩn)."""
+    
+    # === Chiến lược 1: Tìm TẤT CẢ contenteditable trong DOM (kể cả ẩn) ===
+    composer_info = await page.evaluate("""
+        () => {
+            const all = document.querySelectorAll('[contenteditable="true"], textarea, #richInput, #chatInput');
+            const results = [];
+            for (const el of all) {
                 const r = el.getBoundingClientRect();
-                return { x: r.left + r.width/2, y: r.top + r.height/2 };
+                const style = window.getComputedStyle(el);
+                results.push({
+                    tag: el.tagName,
+                    id: el.id,
+                    cls: el.className.substring(0, 80),
+                    w: r.width, h: r.height,
+                    visible: style.display !== 'none' && style.visibility !== 'hidden' && r.width > 0,
+                    display: style.display,
+                    visibility: style.visibility
+                });
             }
-        """, CHAT_INPUT_SELECTORS)
+            return results;
+        }
+    """)
+    _log_event("composer.scan", found=len(composer_info), details=composer_info)
+    
+    # === Chiến lược 2: Nếu tìm thấy composer (dù ẩn) → ép hiện và dùng ===
+    if composer_info:
+        sent = await page.evaluate("""
+            (text) => {
+                const editors = document.querySelectorAll('[contenteditable="true"], textarea, #richInput, #chatInput');
+                for (const el of editors) {
+                    // Ép hiện element nếu bị ẩn
+                    el.style.display = 'block';
+                    el.style.visibility = 'visible';
+                    el.style.opacity = '1';
+                    el.style.height = 'auto';
+                    el.style.minHeight = '30px';
+                    el.style.position = 'relative';
+                    el.style.zIndex = '99999';
+                    
+                    // Focus và nhập nội dung
+                    el.focus();
+                    el.innerHTML = text;
+                    el.textContent = text;
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    return true;
+                }
+                return false;
+            }
+        """, text)
         
-        if res:
-            await page.mouse.click(res['x'], res['y'])
-            await page.keyboard.insert_text(text)
-            await asyncio.sleep(0.5)
+        if sent:
+            await asyncio.sleep(0.3)
             await page.keyboard.press("Enter")
+            _log_event("reply.sent", method="force_composer")
             return True
-        else:
-            _log_event("reply.error", reason="composer_not_found")
-            return False
+    
+    # === Chiến lược 3: Keyboard injection — gõ trực tiếp không cần composer ===
+    _log_event("reply.fallback", method="keyboard_inject")
+    try:
+        # Click vào giữa vùng chat để focus
+        await page.mouse.click(600, 500)
+        await asyncio.sleep(0.3)
+        
+        # Tab nhiều lần để tìm composer (nếu tồn tại nhưng không focus được)
+        for _ in range(5):
+            await page.keyboard.press("Tab")
+            await asyncio.sleep(0.1)
+        
+        # Thử gõ trực tiếp
+        await page.keyboard.insert_text(text)
+        await asyncio.sleep(0.3)
+        await page.keyboard.press("Enter")
+        _log_event("reply.sent", method="keyboard_tab")
+        return True
     except Exception as e:
-        _log_event("reply.exception", error=_serialize_error(e))
+        _log_event("reply.keyboard_fail", error=_serialize_error(e))
+    
+    # === Chiến lược 4: Clipboard paste ===
+    try:
+        await page.evaluate(f'navigator.clipboard.writeText({json.dumps(text)})')
+        await page.keyboard.press("Control+V")
+        await asyncio.sleep(0.3)
+        await page.keyboard.press("Enter")
+        _log_event("reply.sent", method="clipboard")
+        return True
+    except Exception as e:
+        _log_event("reply.all_failed", error=_serialize_error(e))
         return False
 
 async def _capture_chat_state(page):
