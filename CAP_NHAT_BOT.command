@@ -4,22 +4,26 @@
 # Double-click file này trên macOS để:
 #   1. Git commit + push code mới nhất
 #   2. SSH vào VPS → git pull → restart bot
+#
+# Nếu chưa có SSH key, script sẽ xin nhập mật khẩu.
 # ===========================================================
-set -Eeuo pipefail
 
 VPS_USER="root"
 VPS_HOST="103.72.56.225"
 REMOTE_DIR="/root/zalobotV1"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
+PM2_APP="zalo-bot"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
-log()  { printf "${GREEN}[%s] %s${NC}\n" "$(date '+%H:%M:%S')" "$*"; }
+log()  { printf "${GREEN}[%s] ✅ %s${NC}\n" "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf "${YELLOW}[%s] ⚠️  %s${NC}\n" "$(date '+%H:%M:%S')" "$*"; }
 fail() { printf "${RED}[%s] ❌ %s${NC}\n" "$(date '+%H:%M:%S')" "$*"; }
+info() { printf "${CYAN}[%s] ℹ️  %s${NC}\n" "$(date '+%H:%M:%S')" "$*"; }
 
 echo ""
 echo "=============================================="
@@ -28,109 +32,67 @@ echo "=============================================="
 echo ""
 
 # ===== BƯỚC 1: Git commit + push =====
-log "BƯỚC 1: Git commit + push từ máy local"
+log "BƯỚC 1/3: Git commit + push"
 cd "$LOCAL_DIR"
 
 if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
     git add -A
-    COMMIT_MSG="fix: sửa 4 bugs khiến bot im lặng - $(date '+%Y-%m-%d %H:%M')"
-    git commit -m "$COMMIT_MSG"
+    COMMIT_MSG="update: cập nhật bot - $(date '+%Y-%m-%d %H:%M')"
+    git commit -m "$COMMIT_MSG" || true
     log "Đã commit: $COMMIT_MSG"
 else
-    log "Không có thay đổi mới cần commit"
+    info "Không có thay đổi mới cần commit"
 fi
 
-# Push
-log "Đang push lên GitHub..."
+info "Đang push lên GitHub..."
 if git push 2>&1; then
-    log "Push thành công ✅"
+    log "Push thành công"
 else
-    fail "Push thất bại. Kiểm tra lại quyền truy cập GitHub."
-    read -r -n 1 -p "Nhấn phím bất kỳ để đóng..."
+    fail "Push thất bại!"
+    read -r -p "Nhấn Enter để đóng..."
     exit 1
 fi
 
 echo ""
 
-# ===== BƯỚC 2: SSH vào VPS =====
-log "BƯỚC 2: Kết nối VPS ${VPS_USER}@${VPS_HOST}"
+# ===== BƯỚC 2: SSH vào VPS và cập nhật =====
+log "BƯỚC 2/3: Kết nối VPS và cập nhật code"
 
-SSH_OPTS=(
-    -o ConnectTimeout=15
-    -o ServerAliveInterval=30
-    -o ServerAliveCountMax=3
-    -o StrictHostKeyChecking=accept-new
-)
+SSH_OPTS="-o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new"
 
-# Thử SSH key trước
-if ssh -o BatchMode=yes "${SSH_OPTS[@]}" "${VPS_USER}@${VPS_HOST}" "echo ok" >/dev/null 2>&1; then
-    log "SSH key xác thực thành công"
-else
-    warn "SSH key không hoạt động. Bạn sẽ cần nhập mật khẩu VPS."
-fi
+# Chạy từng lệnh riêng qua SSH — tránh heredoc gây lỗi với password prompt
+REMOTE_CMD="cd ${REMOTE_DIR} && echo '📥 Git fetch + reset...' && git fetch origin && git reset --hard origin/main && echo '✅ Git sync OK' && source .venv/bin/activate && pip install -q -r requirements.txt 2>/dev/null && echo '✅ Dependencies OK'"
 
-# SSH vào VPS và cập nhật
-ssh -tt "${SSH_OPTS[@]}" "${VPS_USER}@${VPS_HOST}" <<'REMOTE_SCRIPT'
-set -Eeuo pipefail
-
-REMOTE_DIR="/root/zalobotV1"
-PM2_APP="zalo-bot"
-
-echo ""
-echo "🖥️  Đang trên VPS..."
+info "Nhập mật khẩu VPS nếu được yêu cầu:"
 echo ""
 
-cd "$REMOTE_DIR" || {
-    echo "❌ Không tìm thấy thư mục $REMOTE_DIR"
+if ! ssh ${SSH_OPTS} "${VPS_USER}@${VPS_HOST}" "${REMOTE_CMD}"; then
+    fail "Git pull trên VPS thất bại!"
+    read -r -p "Nhấn Enter để đóng..."
     exit 1
-}
-
-# Git pull
-echo "📥 Git pull..."
-git pull --ff-only || {
-    echo "❌ Git pull thất bại. Có thể có conflict."
-    exit 1
-}
-echo "✅ Git pull thành công"
-
-# Cài dependencies nếu requirements.txt đổi
-echo "📦 Cài Python dependencies..."
-source .venv/bin/activate 2>/dev/null || {
-    python3 -m venv .venv
-    source .venv/bin/activate
-}
-pip install -q -r requirements.txt 2>/dev/null
-
-# Restart PM2
-echo "🔄 Restart pm2: ${PM2_APP}..."
-if pm2 describe "$PM2_APP" >/dev/null 2>&1; then
-    pm2 restart "$PM2_APP" --update-env
-else
-    # Nếu chưa có process, start mới
-    SKIP_PIP_INSTALL=true SKIP_PLAYWRIGHT_INSTALL=true bash ./deploy_and_run.sh
 fi
-pm2 save
+
+log "Code đã được cập nhật trên VPS"
+echo ""
+
+# ===== BƯỚC 3: Restart PM2 =====
+log "BƯỚC 3/3: Restart bot trên VPS"
+
+RESTART_CMD="cd ${REMOTE_DIR} && source .venv/bin/activate && export DISPLAY=:99 && if pm2 describe ${PM2_APP} >/dev/null 2>&1; then pm2 restart ${PM2_APP} --update-env; else SKIP_PIP_INSTALL=true SKIP_PLAYWRIGHT_INSTALL=true bash ./deploy_and_run.sh; fi && pm2 save && echo '' && echo '📊 PM2 Status:' && pm2 describe ${PM2_APP} 2>/dev/null | head -15 && echo '' && echo '📋 30 dòng log gần nhất:' && pm2 logs ${PM2_APP} --lines 30 --nostream 2>/dev/null"
+
+info "Nhập mật khẩu VPS lần nữa nếu được yêu cầu:"
+echo ""
+
+if ! ssh ${SSH_OPTS} "${VPS_USER}@${VPS_HOST}" "${RESTART_CMD}"; then
+    fail "Restart bot trên VPS thất bại!"
+    read -r -p "Nhấn Enter để đóng..."
+    exit 1
+fi
 
 echo ""
 echo "=============================================="
-echo "  ✅ CẬP NHẬT THÀNH CÔNG!"
+echo "  🎉 CẬP NHẬT THÀNH CÔNG!"
+echo "  Bot đã được restart trên VPS."
 echo "=============================================="
 echo ""
-
-# Hiện log mới nhất
-echo "📋 Log 30 dòng gần nhất:"
-echo "----------------------------------------------"
-pm2 logs "$PM2_APP" --lines 30 --nostream 2>/dev/null || true
-echo ""
-
-# Hiện status
-echo "📊 PM2 Status:"
-pm2 describe "$PM2_APP" 2>/dev/null | head -20 || true
-
-REMOTE_SCRIPT
-
-echo ""
-log "🎉 Hoàn tất! Bot đã được cập nhật trên VPS."
-echo ""
-read -r -n 1 -p "Nhấn phím bất kỳ để đóng cửa sổ..."
-echo ""
+read -r -p "Nhấn Enter để đóng cửa sổ..."
