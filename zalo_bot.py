@@ -122,21 +122,47 @@ async def _send_message(page, text: str):
             await asyncio.sleep(0.1)
         
         # Thử gõ trực tiếp
+        await page.bring_to_front()
+        await page.mouse.click(600, 500) # Click vùng chat để chắc chắn focus
         await page.keyboard.insert_text(text)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
+        
+        # Thử nhấn Enter nhiều kiểu
         await page.keyboard.press("Enter")
-        _log_event("reply.sent", method="keyboard_tab")
-        return True
-    except Exception as e:
-        _log_event("reply.keyboard_fail", error=_serialize_error(e))
-    
-    # === Chiến lược 4: Clipboard paste ===
-    try:
-        await page.evaluate(f'navigator.clipboard.writeText({json.dumps(text)})')
-        await page.keyboard.press("Control+V")
-        await asyncio.sleep(0.3)
-        await page.keyboard.press("Enter")
-        _log_event("reply.sent", method="clipboard")
+        await asyncio.sleep(0.5)
+        
+        # === Chiến lược 4: Tìm và click nút Gửi (biểu tượng máy bay) ===
+        _log_event("reply.fallback", method="click_send_btn")
+        send_btn_selectors = [
+            "i[class*='send']", 
+            "div[class*='id-send-btn']", 
+            "[data-testid='chat-input-send']",
+            "span:has-text('Gửi')",
+            "div:has-text('Gửi')"
+        ]
+        for selector in send_btn_selectors:
+            try:
+                btn = page.locator(selector).first
+                if await btn.is_visible():
+                    await btn.click()
+                    _log_event("reply.sent", method="ui_click")
+                    return True
+            except:
+                continue
+
+        # === Chiến lược cuối: JS dispatch Enter event ===
+        await page.evaluate("""
+            () => {
+                const el = document.querySelector('#richInput') || document.activeElement;
+                if (el) {
+                    const ev = new KeyboardEvent('keydown', {
+                        bubbles: true, cancelable: true, keyCode: 13, key: 'Enter'
+                    });
+                    el.dispatchEvent(ev);
+                }
+            }
+        """)
+        _log_event("reply.sent", method="js_dispatch")
         return True
     except Exception as e:
         _log_event("reply.all_failed", error=_serialize_error(e))
