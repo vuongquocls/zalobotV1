@@ -1,0 +1,17 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - heading "no VNC" [level=1] [ref=e4]:
+      - text: "no"
+      - text: VNC
+    - button "Fullscreen" [ref=e5] [cursor=pointer]
+    - button "Settings" [ref=e6] [cursor=pointer]
+    - generic:
+      - option "None" [selected]
+      - option "Local Scaling"
+      - option "Remote Resizing"
+  - generic [ref=e7]:
+    - generic [ref=e8]: noVNC
+    - generic [ref=e10] [cursor=pointer]:
+      - img [ref=e11]
+      - text: Connect
+  - textbox [ref=e13]: ___________________________________________________________________________________________________

@@ -6,3 +6,7 @@ credentials/service_account.json
 /tmp/zalo_reminder_profile/
 .tmp/
 .DS_Store
+zalo_profile/
+runtime-logs/
+output/
+qr_code.png
