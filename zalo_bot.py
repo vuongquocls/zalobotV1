@@ -743,28 +743,53 @@ async def _capture_chat_state(page) -> dict:
 
 
 async def _navigate_to_group(page, group_name: str) -> bool:
-    """Tìm và mở nhóm Zalo theo tên — nhiều cách fallback."""
+    """Tìm và mở nhóm Zalo theo tên — dùng visual heuristic."""
     if not group_name:
         _log_event("group.navigate.skip", reason="missing_group_name")
         return False
 
-    # === Cách 1: Click trực tiếp từ sidebar nếu nhóm đang hiện ===
+    # === Cách 1: Click sidebar item chứa tên nhóm (visual heuristic) ===
     try:
-        sidebar_items = await page.locator(
-            "div[class*='conv-item'], div.msg-item, div[data-id]"
-        ).all()
-        for item in sidebar_items:
-            try:
-                item_text = await item.inner_text()
-                if group_name.lower() in item_text.lower():
-                    await item.click(force=True)
-                    await asyncio.sleep(1)
-                    _log_event("group.navigate.success", method="sidebar", group_name=group_name)
-                    return True
-            except Exception:
-                continue
+        click_result = await page.evaluate(r"""
+            (groupName) => {
+                const allDivs = [...document.querySelectorAll('div')];
+                let sidebarItems = [];
+                
+                // Tìm sidebar container
+                for (const div of allDivs) {
+                    const rect = div.getBoundingClientRect();
+                    if (rect.left > 100 || rect.width < 200 || rect.width > 500 || rect.height < 300) continue;
+                    const children = [...div.children].filter(c => {
+                        const cr = c.getBoundingClientRect();
+                        return cr.height > 40 && cr.height < 120 && cr.width > 200;
+                    });
+                    if (children.length > sidebarItems.length) {
+                        sidebarItems = children;
+                    }
+                }
+                
+                const lower = groupName.toLowerCase();
+                for (let i = 0; i < sidebarItems.length; i++) {
+                    const text = (sidebarItems[i].innerText || '').toLowerCase();
+                    if (text.includes(lower)) {
+                        const rect = sidebarItems[i].getBoundingClientRect();
+                        return { found: true, idx: i, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: text.substring(0, 60) };
+                    }
+                }
+                return { found: false, itemCount: sidebarItems.length, items: sidebarItems.slice(0, 5).map(s => (s.innerText || '').substring(0, 40)) };
+            }
+        """, group_name)
+        
+        if click_result.get("found"):
+            # Dùng Playwright native click tại tọa độ chính xác
+            await page.mouse.click(click_result["x"], click_result["y"])
+            await asyncio.sleep(2)
+            _log_event("group.navigate.success", method="sidebar_heuristic", group_name=group_name, index=click_result.get("idx"))
+            return True
+        else:
+            _log_event("group.navigate.sidebar_miss", group_name=group_name, details=click_result)
     except Exception as exc:
-        _log_event("exception", scope="navigate_group.sidebar", error=_serialize_error(exc))
+        _log_event("exception", scope="navigate_group.sidebar_heuristic", error=_serialize_error(exc))
 
     # === Cách 2: Dùng ô tìm kiếm ===
     search_input = None
@@ -779,38 +804,38 @@ async def _navigate_to_group(page, group_name: str) -> bool:
             await search_input.click(force=True)
             await asyncio.sleep(0.5)
             await search_input.fill(group_name)
-            await asyncio.sleep(3)  # Chờ lâu hơn cho kết quả tìm kiếm
+            await asyncio.sleep(3)
 
-            # Thử nhiều selector kết quả
-            result_selectors = [
-                f"text='{group_name}'",
-                f"div:has-text('{group_name}')",
-                ".search-item",
-                "[class*='search-result']",
-                "[class*='conv-item']",
-                ".msg-item",
-            ]
-            for sel in result_selectors:
+            # Tìm kết quả tìm kiếm bằng heuristic
+            search_click = await page.evaluate(r"""
+                (groupName) => {
+                    const lower = groupName.toLowerCase();
+                    // Tìm element chứa tên nhóm trong vùng giữa (kết quả search)
+                    const all = document.querySelectorAll('div, a, li, span');
+                    for (const el of all) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.height < 30 || rect.height > 120 || rect.width < 200) continue;
+                        if (rect.top < 50) continue;  // Skip header
+                        const text = (el.innerText || '').toLowerCase();
+                        if (text.includes(lower) && text.length < 200) {
+                            return { found: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: text.substring(0, 60) };
+                        }
+                    }
+                    return { found: false };
+                }
+            """, group_name)
+            
+            if search_click.get("found"):
+                await page.mouse.click(search_click["x"], search_click["y"])
+                await asyncio.sleep(2)
                 try:
-                    result = page.locator(sel).first
-                    if await result.count() > 0:
-                        await result.click(force=True)
-                        await asyncio.sleep(1)
-                        # Đóng ô tìm kiếm
-                        try:
-                            await search_input.clear()
-                        except:
-                            pass
-                        try:
-                            await page.keyboard.press("Escape")
-                        except:
-                            pass
-                        _log_event("group.navigate.success", method="search", group_name=group_name, selector=sel)
-                        return True
+                    await page.keyboard.press("Escape")
                 except:
-                    continue
+                    pass
+                _log_event("group.navigate.success", method="search_heuristic", group_name=group_name)
+                return True
 
-            # Đóng ô tìm kiếm nếu không tìm thấy
+            # Đóng tìm kiếm
             try:
                 await search_input.clear()
                 await page.keyboard.press("Escape")
@@ -1525,8 +1550,8 @@ async def main():
 
                         for idx in unread_indices:
                             try:
-                                # Click vào sidebar item bằng cùng heuristic JS
-                                clicked = await page.evaluate(r"""
+                                # Lấy tọa độ sidebar item bằng heuristic JS
+                                coords = await page.evaluate(r"""
                                     (targetIdx) => {
                                         const allDivs = [...document.querySelectorAll('div')];
                                         let sidebarItems = [];
@@ -1544,16 +1569,23 @@ async def main():
                                         }
                                         
                                         if (targetIdx < sidebarItems.length) {
-                                            sidebarItems[targetIdx].click();
-                                            return true;
+                                            const rect = sidebarItems[targetIdx].getBoundingClientRect();
+                                            return { 
+                                                found: true, 
+                                                x: rect.left + rect.width / 2, 
+                                                y: rect.top + rect.height / 2,
+                                                text: (sidebarItems[targetIdx].innerText || '').substring(0, 50)
+                                            };
                                         }
-                                        return false;
+                                        return { found: false };
                                     }
                                 """, idx)
 
-                                if clicked:
-                                    _log_event("sidebar.clicked_item", index=idx)
-                                    await asyncio.sleep(1.5)
+                                if coords and coords.get("found"):
+                                    # Dùng Playwright native click (không dùng JS .click())
+                                    await page.mouse.click(coords["x"], coords["y"])
+                                    _log_event("sidebar.clicked_item", index=idx, text=coords.get("text", ""))
+                                    await asyncio.sleep(2)
 
                                     await _process_chat(
                                         is_unread_click=True,
