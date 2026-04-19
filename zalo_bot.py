@@ -51,122 +51,46 @@ def _serialize_error(exc):
     return {"type": type(exc).__name__, "message": str(exc)}
 
 async def _send_message(page, text: str):
-    """Gửi tin nhắn bằng nhiều chiến lược (bypass composer ẩn)."""
+    """Gửi tin nhắn — dùng keyboard.type() để trigger framework events đúng cách."""
     
-    # === Chiến lược 1: Tìm TẤT CẢ contenteditable trong DOM (kể cả ẩn) ===
-    composer_info = await page.evaluate("""
-        () => {
-            const all = document.querySelectorAll('[contenteditable="true"], textarea, #richInput, #chatInput');
-            const results = [];
-            for (const el of all) {
-                const r = el.getBoundingClientRect();
-                const style = window.getComputedStyle(el);
-                results.push({
-                    tag: el.tagName,
-                    id: el.id,
-                    cls: el.className.substring(0, 80),
-                    w: r.width, h: r.height,
-                    visible: style.display !== 'none' && style.visibility !== 'hidden' && r.width > 0,
-                    display: style.display,
-                    visibility: style.visibility
-                });
-            }
-            return results;
-        }
-    """)
-    _log_event("composer.scan", found=len(composer_info), details=composer_info)
+    # Bước 1: Click vào composer (ô nhập tin nhắn)
+    composer_clicked = False
+    for selector in ['#richInput', '[contenteditable="true"]', '#chatInput', 'textarea']:
+        try:
+            el = page.locator(selector).first
+            if await el.is_visible(timeout=2000):
+                await el.click()
+                composer_clicked = True
+                _log_event("send.composer_found", selector=selector)
+                break
+        except:
+            continue
     
-    # === Chiến lược 2: Nếu tìm thấy composer (dù ẩn) → ép hiện và dùng ===
-    if composer_info:
-        sent = await page.evaluate("""
-            (text) => {
-                const editors = document.querySelectorAll('[contenteditable="true"], textarea, #richInput, #chatInput');
-                for (const el of editors) {
-                    // Ép hiện element nếu bị ẩn
-                    el.style.display = 'block';
-                    el.style.visibility = 'visible';
-                    el.style.opacity = '1';
-                    el.style.height = 'auto';
-                    el.style.minHeight = '30px';
-                    el.style.position = 'relative';
-                    el.style.zIndex = '99999';
-                    
-                    // Focus và nhập nội dung
-                    el.focus();
-                    el.innerHTML = text;
-                    el.textContent = text;
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                    return true;
-                }
-                return false;
-            }
-        """, text)
-        
-        if sent:
-            await asyncio.sleep(0.3)
-            await page.keyboard.press("Enter")
-            _log_event("reply.sent", method="force_composer")
-            return True
-    
-    # === Chiến lược 3: Keyboard injection — gõ trực tiếp không cần composer ===
-    _log_event("reply.fallback", method="keyboard_inject")
-    try:
-        # Click vào giữa vùng chat để focus
-        await page.mouse.click(600, 500)
+    if not composer_clicked:
+        # Fallback: click vào vùng chuẩn của composer (dưới cùng giữa màn hình)
+        _log_event("send.fallback_click", note="clicking composer area by coords")
+        await page.mouse.click(640, 750)  # Khu vực composer trên viewport 1280x800
         await asyncio.sleep(0.3)
-        
-        # Tab nhiều lần để tìm composer (nếu tồn tại nhưng không focus được)
-        for _ in range(5):
-            await page.keyboard.press("Tab")
-            await asyncio.sleep(0.1)
-        
-        # Thử gõ trực tiếp
-        await page.bring_to_front()
-        await page.mouse.click(600, 500) # Click vùng chat để chắc chắn focus
-        await page.keyboard.insert_text(text)
-        await asyncio.sleep(0.5)
-        
-        # Thử nhấn Enter nhiều kiểu
-        await page.keyboard.press("Enter")
-        await asyncio.sleep(0.5)
-        
-        # === Chiến lược 4: Tìm và click nút Gửi (biểu tượng máy bay) ===
-        _log_event("reply.fallback", method="click_send_btn")
-        send_btn_selectors = [
-            "i[class*='send']", 
-            "div[class*='id-send-btn']", 
-            "[data-testid='chat-input-send']",
-            "span:has-text('Gửi')",
-            "div:has-text('Gửi')"
-        ]
-        for selector in send_btn_selectors:
-            try:
-                btn = page.locator(selector).first
-                if await btn.is_visible():
-                    await btn.click()
-                    _log_event("reply.sent", method="ui_click")
-                    return True
-            except:
-                continue
-
-        # === Chiến lược cuối: JS dispatch Enter event ===
-        await page.evaluate("""
-            () => {
-                const el = document.querySelector('#richInput') || document.activeElement;
-                if (el) {
-                    const ev = new KeyboardEvent('keydown', {
-                        bubbles: true, cancelable: true, keyCode: 13, key: 'Enter'
-                    });
-                    el.dispatchEvent(ev);
-                }
-            }
-        """)
-        _log_event("reply.sent", method="js_dispatch")
-        return True
-    except Exception as e:
-        _log_event("reply.all_failed", error=_serialize_error(e))
-        return False
+    
+    await asyncio.sleep(0.3)
+    
+    # Bước 2: Xoá nội dung cũ (nếu có) bằng Ctrl+A rồi Delete
+    await page.keyboard.press("Control+a")
+    await page.keyboard.press("Delete")
+    await asyncio.sleep(0.2)
+    
+    # Bước 3: GÕ TỪNG KÝ TỰ bằng keyboard.type() — QUAN TRỌNG!
+    # Đây là cách DUY NHẤT trigger được event listener của Zalo
+    _log_event("send.typing", length=len(text))
+    await page.keyboard.type(text, delay=10)  # 10ms/ký tự
+    await asyncio.sleep(0.5)
+    
+    # Bước 4: Nhấn Enter để gửi
+    await page.keyboard.press("Enter")
+    _log_event("send.done", method="keyboard_type_enter")
+    
+    await asyncio.sleep(1)
+    return True
 
 async def _capture_chat_state(page):
     """Trích xuất trạng thái chat (Visual Heuristic). Tối ưu hoá cho VPS."""
