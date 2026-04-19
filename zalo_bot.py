@@ -1102,10 +1102,85 @@ async def main():
             chat_type=chat_state.get("chatType"),
             classification_reason=chat_state.get("classificationReason"),
             message_count=len(chat_state.get("messages", [])),
+            has_composer=chat_state.get("hasComposer"),
             composer=chat_state.get("composerSelector"),
             header=chat_state.get("fullHeader"),
             active_sidebar=chat_state.get("activeSidebarName"),
         )
+
+        # === STARTUP DIAGNOSTIC ===
+        try:
+            diag = await page.evaluate(r"""
+                () => {
+                    const result = {
+                        url: location.href,
+                        title: document.title,
+                        viewport: { w: window.innerWidth, h: window.innerHeight },
+                    };
+                    
+                    // Test 1: Tìm sidebar container
+                    const allDivs = [...document.querySelectorAll('div')];
+                    let bestContainer = null;
+                    let bestChildren = [];
+                    
+                    for (const div of allDivs) {
+                        const rect = div.getBoundingClientRect();
+                        if (rect.left > 100 || rect.width < 200 || rect.width > 500 || rect.height < 300) continue;
+                        const children = [...div.children].filter(c => {
+                            const cr = c.getBoundingClientRect();
+                            return cr.height > 40 && cr.height < 120 && cr.width > 200;
+                        });
+                        if (children.length > bestChildren.length) {
+                            bestContainer = div;
+                            bestChildren = children;
+                        }
+                    }
+                    
+                    result.sidebar = {
+                        found: !!bestContainer,
+                        itemCount: bestChildren.length,
+                        containerClass: bestContainer ? (typeof bestContainer.className === 'string' ? bestContainer.className.substring(0, 80) : '') : null,
+                        items: bestChildren.slice(0, 8).map((c, i) => ({
+                            idx: i,
+                            text: (c.innerText || '').replace(/\s+/g, ' ').trim().substring(0, 60),
+                            height: Math.round(c.getBoundingClientRect().height),
+                        })),
+                    };
+                    
+                    // Test 2: Tìm chat input
+                    const composerSelectors = ['#richInput', '#chatInput', "footer [contenteditable='true']", "div[contenteditable='true'][role='textbox']", "div[contenteditable='true']", 'textarea'];
+                    const composers = [];
+                    for (const sel of composerSelectors) {
+                        const els = document.querySelectorAll(sel);
+                        for (const el of els) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 40 && rect.height > 16) {
+                                composers.push({
+                                    selector: sel,
+                                    tag: el.tagName,
+                                    visible: rect.width > 0 && rect.height > 0,
+                                    rect: { top: Math.round(rect.top), left: Math.round(rect.left), w: Math.round(rect.width), h: Math.round(rect.height) },
+                                });
+                            }
+                        }
+                    }
+                    result.composers = composers;
+                    
+                    return result;
+                }
+            """)
+            _log_event("startup.diagnostic", **diag)
+            
+            # Chụp screenshot diagnostic
+            try:
+                screenshot_path = os.path.join(BASE_DIR, "diagnostic_screenshot.png")
+                await page.screenshot(path=screenshot_path, full_page=False)
+                _log_event("startup.screenshot_saved", path=screenshot_path)
+            except Exception:
+                pass
+                
+        except Exception as exc:
+            _log_event("startup.diagnostic_error", error=str(exc))
 
         # Tracking
         replied_signatures: set[str] = set()
