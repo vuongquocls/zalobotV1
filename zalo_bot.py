@@ -39,6 +39,7 @@ from message_builder import (
     build_today_empty_message,
     build_task_detail,
 )
+import brain
 from ai_helper import draft_article, answer_question
 
 # === Config ===
@@ -677,9 +678,9 @@ async def _capture_chat_state(page) -> dict:
                     const dedupeKey = `${Math.round(rect.top)}:${Math.round(rect.left)}:${text}`;
                     if (messageSeen.has(dedupeKey)) continue;
                     messageSeen.add(dedupeKey);
-                    // Phân biệt tin gửi/nhận: tin nằm bên phải center = outgoing (me)
-                    const msgCenterX = rect.left + rect.width * 0.5;
-                    const isMe = msgCenterX > chatCenterX;
+                    
+                    const isMe = (rect.right > rootRect.left + rootRect.width * 0.7);
+                    
                     messages.push({
                         text,
                         top: Math.round(rect.top),
@@ -689,7 +690,6 @@ async def _capture_chat_state(page) -> dict:
                 }
 
                 messages.sort((a, b) => (a.top - b.top) || (a.left - b.left));
-                // Tách tin incoming (người khác) vs outgoing (me)
                 const incomingMessages = [];
                 const allFlattened = [];
                 for (const item of messages) {
@@ -955,7 +955,7 @@ async def _handle_command(page, text: str, recent_bot_replies: list[str]):
         return
 
 
-async def _handle_natural_language(page, text: str, recent_bot_replies: list[str]):
+async def _handle_natural_language(page, text: str, recent_bot_replies: list[str], chat_type: str = "unknown", chat_name: str = ""):
     """Xử lý câu hỏi tự nhiên (không phải lệnh /)."""
     intent = _detect_intent(text)
 
@@ -968,7 +968,7 @@ async def _handle_natural_language(page, text: str, recent_bot_replies: list[str
     elif intent == 'help':
         await _handle_command(page, '/help', recent_bot_replies)
     else:
-        # Hỏi đáp tự do — gửi kèm context từ Sheet
+        # Hỏi đáp tự do — sử dụng "não bộ" thông minh (Hermes Style)
         try:
             all_tasks = fetch_all_tasks()
             context_parts = []
@@ -977,13 +977,18 @@ async def _handle_natural_language(page, text: str, recent_bot_replies: list[str
                     f"[{t.due_date_raw}] {t.topic} | {t.assignee or '?'} | {t.status or '?'}"
                 )
             context = "\n".join(context_parts)
-            result = await answer_question(text, context)
-            if len(result) > 3500:
-                result = result[:3500] + "\n\n(Đã rút gọn)"
+            
+            # Gọi "não bộ" thông minh
+            result = await brain.process_message(text, chat_type, context)
+            
+            if len(result) > 4000:
+                result = result[:4000] + "\n\n(Đã rút gọn)"
+            
             await _send_message(page, result)
             recent_bot_replies.append(re.sub(r'\W+', '', result).lower())
         except Exception as e:
-            await _send_message(page, f"Em gặp lỗi khi trả lời: {e}")
+            _log_event("exception", scope="brain_process", error=str(e))
+            await _send_message(page, f"Em gặp lỗi khi suy nghĩ: {e}")
 
 
 async def main():
@@ -1125,18 +1130,21 @@ async def main():
                             'div.msg-item'
                         );
                         items.forEach((item, idx) => {
-                            // Tìm badge chưa đọc: thường là một element nhỏ chứa số
+                            // Tìm badge chưa đọc: có thể là dot hoặc số
                             const badges = item.querySelectorAll(
-                                '[class*="unread"], [class*="badge"], ' +
-                                '[class*="count"], span.num'
+                                '.unread-badge, .count-badge, [class*="unread"], [class*="badge"], ' +
+                                '[class*="count"], span.num, .dot-unread, .dot'
                             );
                             for (const b of badges) {
                                 const text = (b.textContent || '').trim();
                                 const className = typeof b.className === 'string' ? b.className : '';
-                                // Badge chứa số (1, 2, 3...) hoặc có class unread
+                                const style = window.getComputedStyle(b);
+                                const isRed = style.backgroundColor.includes('rgb(255,') || style.backgroundColor.includes('rgb(244,');
+
                                 if (/^\d+$/.test(text) || 
                                     className.includes('unread') ||
-                                    className.includes('badge')) {
+                                    className.includes('badge') ||
+                                    isRed) {
                                     results.push(idx);
                                     break;
                                 }
@@ -1319,7 +1327,7 @@ async def main():
                     last_reply_time_by_chat[chat_key] = time.time()
                     try:
                         await _handle_natural_language(
-                            page, remainder, recent_bot_replies
+                            page, remainder, recent_bot_replies, chat_type, chat_key
                         )
                     except Exception as exc:
                         _log_event("exception", scope="process_chat.natural_language", error=_serialize_error(exc), traceback=traceback.format_exc())
