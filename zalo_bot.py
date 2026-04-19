@@ -204,8 +204,10 @@ async def _find_unread_sidebar(page):
             
             const items = Array.from(sidebar.children).filter(c => c.getBoundingClientRect().height > 40);
             return items.map((it, idx) => {
-                const hasBadge = !!it.querySelector('[class*="unread"], [class*="badge"], [class*="count"]');
-                return hasBadge ? idx : -1;
+                // Phổ rộng: badge đỏ, emoji báo unread, hoặc class name chứa unread/count
+                const hasBadge = !!it.querySelector('[class*="unread"], [class*="badge"], [class*="count"], .cnt, .v-badge');
+                const hasUnreadSymbol = it.innerText.includes('●') || it.innerText.includes('○');
+                return (hasBadge || hasUnreadSymbol) ? idx : -1;
             }).filter(i => i !== -1);
         }
     """)
@@ -289,16 +291,30 @@ async def main():
 
                 # 2. Xử lý tin chưa đọc từ Sidebar
                 unreads = await _find_unread_sidebar(page)
-                for idx in unreads:
-                    await _click_sidebar(page, idx)
+                
+                # Check thêm chat ĐANG MỞ hiện tại (tránh việc noVNC mở sẵn làm mất badge)
+                targets = list(unreads)
+                if not targets:
+                    targets = [999] # 999 là mã giả để báo hiệu "check active chat"
+                
+                for idx in targets:
+                    if idx != 999:
+                        await _click_sidebar(page, idx)
+                    
                     state = await _capture_chat_state(page)
                     incoming = state.get("incomingMessages", [])
+                    
                     if incoming:
                         latest = incoming[-1]
                         chat_key = state.get("chatName", "temp")
                         
+                        # Log vắn tắt để debug
+                        _log_event("chat.capture", name=chat_key, last_msg=latest[:30], type=state["chatType"])
+                        
                         # Điều kiện trả lời: Group có tag bot, hoặc chat cá nhân
-                        should_reply = (state["chatType"] == "personal") or (BOT_HINT.lower() in latest.lower())
+                        is_personal = state["chatType"] == "personal"
+                        has_hint = BOT_HINT.lower() in latest.lower()
+                        should_reply = is_personal or has_hint
                         
                         # Cooldown & Dedupe
                         sig = hash(latest)
