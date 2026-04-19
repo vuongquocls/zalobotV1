@@ -1038,9 +1038,15 @@ async def main():
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--window-size=1280,800",
+                "--disable-infobars",
+                "--no-first-run",
+                "--disable-session-crashed-bubble",
+                "--hide-crash-restore-bubble",
+                "--suppress-message-center-popups",
             ],
             viewport={"width": 1280, "height": 800},
             no_viewport=False,
+            ignore_default_args=["--enable-automation"],
         )
 
         page = browser.pages[0] if browser.pages else await browser.new_page()
@@ -1103,19 +1109,51 @@ async def main():
                 _log_event("session.timeout", wait_seconds=max_wait)
                 sys.exit(1)
         
-        # Dọn popup sau khi login
+        # === BƯỚC QUAN TRỌNG: Dọn popup + Reload trang để Zalo khởi tạo đầy đủ ===
+        # 1. Đóng tất cả popup/infobar có thể chặn composer
         try:
-            restore = page.locator(
-                "div[role='alertdialog'] button, button:has-text('Khôi phục'), button:has-text('Restore')"
-            ).first
-            if await restore.count() > 0:
-                await restore.click(timeout=2000)
-                _log_event("popup.dismissed", kind="restore_session")
+            # Ẩn overlay restore session bằng JS
+            await page.evaluate(r"""
+                () => {
+                    // Đóng Chromium restore bubble/infobar
+                    const popups = document.querySelectorAll(
+                        '[role="alertdialog"], [class*="infobar"], [class*="restore"], ' +
+                        '[class*="bubble"], [class*="notification"], [class*="popup"]'
+                    );
+                    popups.forEach(p => p.remove());
+                    
+                    // Click bất kỳ nút đóng nào
+                    const btns = document.querySelectorAll('button');
+                    for (const b of btns) {
+                        const text = (b.textContent || '').toLowerCase();
+                        if (text.includes('restore') || text.includes('khôi phục') || text === '×' || text === 'x') {
+                            b.click();
+                        }
+                    }
+                }
+            """)
+            _log_event("popup.dismissed", kind="js_remove_all")
         except Exception as exc:
             _log_event("exception", scope="dismiss_restore_popup", error=_serialize_error(exc))
-            pass
 
-        # Thử mở nhóm Zalo đã cấu hình
+        # 2. Reload page hoàn toàn để Zalo khởi tạo sạch (fix composer bị mất)
+        _log_event("session.reload", reason="ensure_clean_zalo_init")
+        await page.reload(wait_until="domcontentloaded")
+        await asyncio.sleep(5)  # Chờ Zalo tải lại
+        
+        # 3. Chờ Zalo sẵn sàng sau reload
+        try:
+            await page.wait_for_selector(", ".join(LOGIN_INDICATOR_SELECTORS), timeout=15000)
+        except Exception:
+            _log_event("session.reload_timeout", state="waiting_for_zalo")
+        
+        # 4. Đóng popup lần nữa sau reload
+        try:
+            await page.evaluate('document.querySelectorAll("[role=alertdialog], [class*=notification], [class*=popup]").forEach(e => e.remove())')
+        except Exception:
+            pass
+        
+        # 5. Mở nhóm Zalo đã cấu hình
         if ZALO_GROUP_NAME:
             await asyncio.sleep(2)
             await _navigate_to_group(page, ZALO_GROUP_NAME)
