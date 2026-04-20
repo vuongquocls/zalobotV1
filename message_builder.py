@@ -70,7 +70,7 @@ def build_today_tasks_message(today_tasks: list["Task"]) -> str:
         lines.append(f"* Chủ đề/Tiêu đề bài viết: {task.topic}")
         lines.append(f"* Đơn vị/Cá nhân thực hiện: {task.assignee or '(chưa giao)'}")
         lines.append(f"* Trạng thái: {task.status or '(chưa cập nhật)'}")
-        lines.append(f"* Lưu ý: {task.notes or '(không có)'}")
+        lines.append("* Lưu ý:")
         lines.append(f"* Link theo dõi: {_sheet_url()}")
 
     return "\n".join(lines)
@@ -101,7 +101,7 @@ def build_upcoming_tasks_message(upcoming_tasks: list["Task"], days_ahead: int =
         lines.append(f"* Chủ đề/Tiêu đề bài viết: {task.topic}")
         lines.append(f"* Đơn vị/Cá nhân thực hiện: {task.assignee or '(chưa giao)'}")
         lines.append(f"* Trạng thái: {task.status or '(chưa cập nhật)'}")
-        lines.append(f"* Lưu ý: {task.notes or '(không có)'}")
+        lines.append("* Lưu ý:")
         lines.append(f"* Link theo dõi: {_sheet_url()}")
 
     return "\n".join(lines)

@@ -28,7 +28,8 @@ class MessageBuilderTests(unittest.TestCase):
         self.assertIn("* Chủ đề/Tiêu đề bài viết: Câu chuyện Kiểm lâm: Bữa cơm vội giữa rừng mùa khô hanh", reply)
         self.assertIn("* Đơn vị/Cá nhân thực hiện: Hạt KL (A. Hòa, A. Nguyên)", reply)
         self.assertIn("* Trạng thái: Đang thu thập tư liệu", reply)
-        self.assertIn("* Lưu ý: Khởi động tuyến Storytelling mùa khô", reply)
+        self.assertIn("* Lưu ý:", reply)
+        self.assertNotIn("Khởi động tuyến Storytelling mùa khô", reply)
         self.assertIn(f"* Link theo dõi: {get_sheet_public_url()}", reply)
 
     def test_upcoming_tasks_message_uses_sheet_data(self):
