@@ -1030,6 +1030,8 @@ async def _handle_command(page, command: str, payload: str, chat_name: str) -> N
 
 async def _handle_natural_language(page, text: str, chat_type: str) -> None:
     try:
+        intent = brain.classify_intent(text, chat_type)
+        _log_event("brain.intent", chat_type=chat_type, intent=intent, text=text[:200])
         context = _build_ai_context()
         reply = await brain.process_message(text, chat_type, context=context)
         if reply:
