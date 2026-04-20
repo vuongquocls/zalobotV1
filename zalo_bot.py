@@ -144,7 +144,8 @@ def _extract_command(text: str) -> tuple[str, str] | None:
 
 def _strip_accents(value: str) -> str:
     normalized = unicodedata.normalize("NFD", value or "")
-    return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    without_marks = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    return without_marks.replace("đ", "d").replace("Đ", "D")
 
 
 def _simplify_text(value: str) -> str:
