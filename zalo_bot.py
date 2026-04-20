@@ -62,6 +62,15 @@ BOT_NAMES = [name.strip().lower() for name in BOT_NAME_RAW.split(",") if name.st
 if not BOT_NAMES:
     BOT_NAMES = ["nhan vien moi yok don"]
 
+ONBOARDING_PATTERNS = (
+    "chào mừng đến với zalo pc",
+    "chao mung den voi zalo pc",
+    "khám phá những tiện ích",
+    "trải nghiệm xuyên suốt",
+    "dong bo tin nhan gan day",
+    "đồng bộ tin nhắn gần đây",
+)
+
 SEARCH_INPUT_SELECTORS = [
     "#contact-search-input",
     "input[placeholder*='Tìm kiếm']",
@@ -157,6 +166,17 @@ def _build_help_message() -> str:
             f"Sheet hien tai: {sheet_url}",
         ]
     )
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).lower()
+
+
+def _looks_like_onboarding_text(value: str) -> bool:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return False
+    return any(pattern in normalized for pattern in ONBOARDING_PATTERNS)
 
 
 def _format_tasks_for_context(limit: int = 12) -> str:
@@ -267,26 +287,46 @@ async def _capture_chat_state(page) -> dict:
                 const header = document.querySelector('header') || document.querySelector('[class*="header"]');
                 const headerText = header ? header.innerText || '' : '';
 
+                const pageText = document.body.innerText || '';
+                const onboardingPatterns = [
+                    'Chào mừng đến với Zalo PC',
+                    'Chao mung den voi Zalo PC',
+                    'Khám phá những tiện ích',
+                    'Trải nghiệm xuyên suốt',
+                    'Đồng bộ tin nhắn gần đây',
+                    'Dong bo tin nhan gan day',
+                ];
+                const isOnboarding = onboardingPatterns.some((pattern) => pageText.includes(pattern));
+
                 const composer = ['#richInput', '#chatInput', 'footer [contenteditable="true"]', 'div[contenteditable="true"]']
                     .map((selector) => document.querySelector(selector))
-                    .find((node) => node && node.offsetParent !== null);
+                    .find((node) => {
+                        if (!node || node.offsetParent === null) return false;
+                        const rect = node.getBoundingClientRect();
+                        return rect.left > 450 && rect.top > (window.innerHeight - 240);
+                    });
 
                 const root = document.querySelector('#chat-root') || document.body;
                 const rootRect = root.getBoundingClientRect();
-                const centerX = rootRect.left + rootRect.width / 2;
+                const sidebarRight = Math.min(Math.max(window.innerWidth * 0.32, 320), 520);
+                const mainLeft = sidebarRight;
+                const centerX = mainLeft + (window.innerWidth - mainLeft) / 2;
+                const composerTop = composer ? composer.getBoundingClientRect().top : window.innerHeight - 100;
 
                 let chatType = 'unknown';
                 if (headerText.includes('thành viên') || headerText.includes('thanh vien') || headerText.includes('members')) {
                     chatType = 'group';
-                } else if (composer) {
+                } else if (composer && !isOnboarding) {
                     chatType = 'personal';
                 }
 
                 const nodes = [...document.querySelectorAll('div, span')]
                     .filter((el) => {
                         const rect = el.getBoundingClientRect();
-                        if (rect.width < 30 || rect.height < 12) return false;
-                        if (rect.top < 80 || rect.top > window.innerHeight - 80) return false;
+                        if (rect.left < mainLeft + 12 || rect.right > window.innerWidth - 12) return false;
+                        if (rect.width < 40 || rect.height < 14) return false;
+                        if (rect.width > (window.innerWidth - mainLeft) * 0.78) return false;
+                        if (rect.top < 90 || rect.bottom > composerTop - 10) return false;
                         const text = (el.innerText || '').trim();
                         return text && text.length < 800;
                     })
@@ -314,6 +354,7 @@ async def _capture_chat_state(page) -> dict:
                 return {
                     chatName: (headerText.split('\\n')[0] || '').trim(),
                     chatType,
+                    isOnboarding,
                     incomingMessages: unique.filter((item) => !item.isMe).map((item) => item.text).slice(-10),
                     visibleMessages: unique.map((item) => item.text).slice(-20),
                     hasComposer: Boolean(composer),
@@ -382,54 +423,97 @@ async def _scan_for_red_badges(page) -> list[dict]:
         return []
 
 
-async def _scan_for_unread_chat_rows(page) -> list[dict]:
+async def _scan_sidebar_chats(page) -> list[dict]:
     try:
         return await page.evaluate(
             """
             () => {
-                const rows = [];
+                const sidebarRight = Math.min(Math.max(window.innerWidth * 0.32, 320), 520);
                 const allNodes = [...document.querySelectorAll('div, li, a, button')];
+                const rows = [];
+                const ignoredExact = new Set([
+                    'Tất cả',
+                    'Chưa đọc',
+                    'Ưu tiên',
+                    'Khác',
+                    'Phân loại',
+                    'Đồng bộ ngay',
+                ]);
 
-                const hasUnreadBadge = (node) => {
+                const isTimeLike = (line) => {
+                    const value = (line || '').trim().toLowerCase();
+                    return Boolean(
+                        value.match(/^\\d{1,2}:\\d{2}$/) ||
+                        value.match(/^\\d+\\s*(phút|giờ|ngày|tuần|tháng|nam|năm)$/) ||
+                        value.includes('vài giây') ||
+                        value.includes('hom qua') ||
+                        value.includes('hôm qua')
+                    );
+                };
+
+                const extractBadgeNumber = (node) => {
                     for (const child of node.querySelectorAll('*')) {
+                        const text = (child.innerText || '').trim();
+                        if (!/^\\d{1,3}$/.test(text)) continue;
                         const rect = child.getBoundingClientRect();
-                        if (rect.width < 10 || rect.height < 10) continue;
+                        if (rect.width < 10 || rect.height < 10 || rect.left < sidebarRight - 90) continue;
                         const style = window.getComputedStyle(child);
                         const bg = style.backgroundColor || '';
                         const match = bg.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/);
                         if (!match) continue;
-
                         const r = Number(match[1]);
                         const g = Number(match[2]);
                         const b = Number(match[3]);
-                        if (r > 200 && g < 120 && b < 120) return true;
+                        if (r > 180 && g < 140 && b < 140) {
+                            return Number(text);
+                        }
                     }
-                    return false;
+                    return 0;
                 };
 
                 for (const node of allNodes) {
                     const rect = node.getBoundingClientRect();
-                    if (rect.left < 100 || rect.left > 760) continue;
+                    if (rect.left < 30 || rect.right > sidebarRight + 40) continue;
                     if (rect.top < 120 || rect.top > window.innerHeight - 40) continue;
-                    if (rect.width < 220 || rect.height < 44 || rect.height > 140) continue;
+                    if (rect.width < 240 || rect.height < 44 || rect.height > 120) continue;
 
                     const text = (node.innerText || '').trim();
                     if (!text || text.length > 300) continue;
-                    if (!hasUnreadBadge(node)) continue;
+                    if (text.includes('Chào mừng đến với Zalo PC')) continue;
+                    if (text.includes('Đồng bộ tin nhắn gần đây')) continue;
+
+                    const rawLines = text.split('\\n').map((line) => line.trim()).filter(Boolean);
+                    const lines = rawLines.filter((line) => !ignoredExact.has(line));
+                    if (!lines.length) continue;
+
+                    const contentLines = lines.filter((line) => !isTimeLike(line) && !/^\\d{1,3}$/.test(line));
+                    if (!contentLines.length) continue;
+
+                    const title = contentLines[0];
+                    const preview = contentLines.find((line, index) => index > 0) || "";
+                    if (!title) continue;
 
                     rows.push({
-                        x: Math.min(rect.left + 120, rect.right - 40),
+                        title,
+                        preview,
+                        unreadCount: extractBadgeNumber(node),
+                        isMinePreview: preview.startsWith('Bạn:') || preview.startsWith('Ban:'),
+                        x: Math.min(rect.left + 110, rect.right - 40),
                         y: rect.top + rect.height / 2,
-                        text: text.slice(0, 120),
+                        top: rect.top,
+                        width: rect.width,
+                        rawText: text.slice(0, 200),
                     });
                 }
 
+                rows.sort((a, b) => a.top - b.top || b.width - a.width);
                 const unique = [];
                 const seen = new Set();
                 for (const row of rows) {
                     const key = `${Math.round(row.y / 10)}`;
-                    if (!seen.has(key)) {
-                        seen.add(key);
+                    const normalizedTitle = row.title.toLowerCase();
+                    if (!seen.has(key + ':' + normalizedTitle)) {
+                        seen.add(key + ':' + normalizedTitle);
                         unique.push(row);
                     }
                 }
@@ -438,7 +522,7 @@ async def _scan_for_unread_chat_rows(page) -> list[dict]:
             """
         )
     except Exception as exc:
-        _log_event("unread_row_scan.error", error=_serialize_error(exc))
+        _log_event("sidebar_scan.error", error=_serialize_error(exc))
         return []
 
 
@@ -496,6 +580,98 @@ async def _open_chat_by_name(page, chat_name: str) -> bool:
     await page.wait_for_timeout(1200)
     _log_event("chat.opened", chat=chat_name)
     return True
+
+
+def _is_valid_chat_title(chat_name: str) -> bool:
+    normalized = _normalize_text(chat_name)
+    if not normalized:
+        return False
+    if _looks_like_onboarding_text(normalized):
+        return False
+    return normalized not in {"zalo", "zalo pc"}
+
+
+def _should_ignore_sidebar_chat(chat: dict) -> bool:
+    title = _normalize_text(chat.get("title", ""))
+    preview = _normalize_text(chat.get("preview", ""))
+    raw_text = _normalize_text(chat.get("rawText", ""))
+
+    if not title:
+        return True
+    if any(_looks_like_onboarding_text(value) for value in (title, preview, raw_text)):
+        return True
+    if "đồng bộ tin nhắn gần đây" in raw_text or "dong bo tin nhan gan day" in raw_text:
+        return True
+    return False
+
+
+def _sidebar_signature(chat: dict) -> str:
+    preview = chat.get("preview", "")
+    unread_count = chat.get("unreadCount", 0)
+    raw_text = chat.get("rawText", "")
+    return f"{preview}|{unread_count}|{raw_text}"
+
+
+def _select_sidebar_targets(chats: list[dict], sidebar_state: dict, bootstrapped: bool) -> tuple[list[dict], dict]:
+    next_state = dict(sidebar_state)
+    candidates = []
+
+    for chat in chats:
+        if _should_ignore_sidebar_chat(chat):
+            continue
+
+        title = chat.get("title", "").strip()
+        signature = _sidebar_signature(chat)
+        previous_signature = next_state.get(title)
+        next_state[title] = signature
+
+        if not bootstrapped:
+            continue
+
+        if chat.get("isMinePreview"):
+            continue
+
+        if previous_signature is None:
+            if chat.get("unreadCount", 0) > 0:
+                candidates.append(chat)
+            continue
+
+        if signature != previous_signature:
+            candidates.append(chat)
+
+    candidates.sort(key=lambda item: (-int(item.get("unreadCount", 0)), item.get("top", 9999)))
+    return candidates, next_state
+
+
+async def _open_sidebar_chat(page, chat: dict) -> bool:
+    try:
+        await page.mouse.click(chat["x"], chat["y"])
+        await page.wait_for_timeout(1200)
+
+        state = await _capture_chat_state(page)
+        current_name = state.get("chatName", "")
+        if state.get("hasComposer") and _is_valid_chat_title(current_name):
+            _log_event("chat.row.opened", expected=chat.get("title", ""), actual=current_name)
+            return True
+
+        await page.mouse.dblclick(chat["x"], chat["y"])
+        await page.wait_for_timeout(1200)
+        state = await _capture_chat_state(page)
+        current_name = state.get("chatName", "")
+        ok = state.get("hasComposer") and _is_valid_chat_title(current_name)
+        if ok:
+            _log_event("chat.row.opened", expected=chat.get("title", ""), actual=current_name, method="dblclick")
+        else:
+            _log_event(
+                "chat.row.open_failed",
+                expected=chat.get("title", ""),
+                actual=current_name,
+                onboarding=bool(state.get("isOnboarding")),
+            )
+        return bool(ok)
+    except Exception as exc:
+        _log_event("chat.row.click_error", chat=chat.get("title", ""), error=_serialize_error(exc))
+        return False
 
 
 def _build_daily_message() -> str:
@@ -667,6 +843,8 @@ async def main() -> None:
 
         last_processed_signature: dict[str, str] = {}
         last_reply_time: dict[str, float] = {}
+        sidebar_state: dict[str, str] = {}
+        sidebar_bootstrapped = False
         last_session_state = ""
 
         while True:
@@ -687,27 +865,70 @@ async def main() -> None:
 
                 await _maybe_send_scheduled_reminder(page)
 
-                badges = await _scan_for_red_badges(page)
-                unread_rows = await _scan_for_unread_chat_rows(page)
-                targets = badges or unread_rows or [{"x": 640, "y": 320, "is_active": True}]
-                if badges or unread_rows:
+                sidebar_chats = await _scan_sidebar_chats(page)
+                changed_chats, next_sidebar_state = _select_sidebar_targets(
+                    sidebar_chats,
+                    sidebar_state,
+                    sidebar_bootstrapped,
+                )
+                sidebar_state = next_sidebar_state
+                if not sidebar_bootstrapped and sidebar_chats:
+                    sidebar_bootstrapped = True
+
+                if sidebar_chats:
                     _log_event(
-                        "unread.detected",
-                        badge_count=len(badges),
-                        row_count=len(unread_rows),
-                        sample=(badges or unread_rows)[0].get("text", ""),
+                        "sidebar.scan",
+                        count=len(sidebar_chats),
+                        first=sidebar_chats[0].get("title", ""),
+                        changed=len(changed_chats),
                     )
 
-                for target in targets:
-                    if "is_active" not in target:
-                        await page.mouse.click(target["x"], target["y"])
-                        await page.wait_for_timeout(1200)
+                current_state = await _capture_chat_state(page)
+                current_chat_name = current_state.get("chatName") or "Unknown"
+                current_chat_type = current_state.get("chatType") or "unknown"
+                current_incoming_messages = current_state.get("incomingMessages") or []
+                current_has_composer = bool(current_state.get("hasComposer"))
+                current_is_onboarding = bool(current_state.get("isOnboarding"))
+
+                _log_event(
+                    "chat.inspect",
+                    chat=current_chat_name,
+                    chat_type=current_chat_type,
+                    incoming_count=len(current_incoming_messages),
+                    has_composer=current_has_composer,
+                    onboarding=current_is_onboarding,
+                )
+
+                fallback_targets = [
+                    chat for chat in sidebar_chats
+                    if not _should_ignore_sidebar_chat(chat) and int(chat.get("unreadCount", 0)) > 0 and not chat.get("isMinePreview")
+                ]
+                open_targets = changed_chats or (
+                    fallback_targets[:1]
+                    if (current_is_onboarding or not current_has_composer or not _is_valid_chat_title(current_chat_name))
+                    else []
+                )
+
+                if open_targets:
+                    sample_chat = open_targets[0]
+                    _log_event(
+                        "unread.detected",
+                        sidebar_count=len(sidebar_chats),
+                        changed_count=len(changed_chats),
+                        sample=sample_chat.get("title", ""),
+                        preview=sample_chat.get("preview", ""),
+                    )
+
+                for chat in open_targets:
+                    if not await _open_sidebar_chat(page, chat):
+                        continue
 
                     state = await _capture_chat_state(page)
-                    chat_name = state.get("chatName") or "Unknown"
+                    chat_name = state.get("chatName") or chat.get("title", "Unknown")
                     chat_type = state.get("chatType") or "unknown"
                     incoming_messages = state.get("incomingMessages") or []
                     has_composer = bool(state.get("hasComposer"))
+                    is_onboarding = bool(state.get("isOnboarding"))
 
                     _log_event(
                         "chat.inspect",
@@ -715,9 +936,10 @@ async def main() -> None:
                         chat_type=chat_type,
                         incoming_count=len(incoming_messages),
                         has_composer=has_composer,
+                        onboarding=is_onboarding,
                     )
 
-                    if not has_composer or not incoming_messages:
+                    if not has_composer or is_onboarding or not incoming_messages:
                         continue
 
                     latest_message = incoming_messages[-1]
