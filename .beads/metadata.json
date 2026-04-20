@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "zalo_work_reminder_bot",
+  "project_id": "ceea0fb7-c779-48d4-a7b1-df8ad0e2cd6d"
+}
