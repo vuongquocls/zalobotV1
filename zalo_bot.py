@@ -474,8 +474,8 @@ async def _scan_sidebar_chats(page) -> list[dict]:
                 for (const node of allNodes) {
                     const rect = node.getBoundingClientRect();
                     if (rect.left < 30 || rect.right > sidebarRight + 40) continue;
-                    if (rect.top < 120 || rect.top > window.innerHeight - 40) continue;
-                    if (rect.width < 240 || rect.height < 44 || rect.height > 120) continue;
+                    if (rect.top < 70 || rect.top > window.innerHeight - 40) continue;
+                    if (rect.width < 160 || rect.height < 32 || rect.height > 140) continue;
 
                     const text = (node.innerText || '').trim();
                     if (!text || text.length > 300) continue;
@@ -641,6 +641,21 @@ def _select_sidebar_targets(chats: list[dict], sidebar_state: dict, bootstrapped
 
     candidates.sort(key=lambda item: (-int(item.get("unreadCount", 0)), item.get("top", 9999)))
     return candidates, next_state
+
+
+def _pick_bootstrap_chat(chats: list[dict]) -> dict | None:
+    valid_chats = [chat for chat in chats if not _should_ignore_sidebar_chat(chat)]
+    if not valid_chats:
+        return None
+
+    valid_chats.sort(
+        key=lambda item: (
+            0 if int(item.get("unreadCount", 0)) > 0 else 1,
+            0 if not item.get("isMinePreview") else 1,
+            item.get("top", 9999),
+        )
+    )
+    return valid_chats[0]
 
 
 async def _open_sidebar_chat(page, chat: dict) -> bool:
@@ -880,6 +895,7 @@ async def main() -> None:
                         "sidebar.scan",
                         count=len(sidebar_chats),
                         first=sidebar_chats[0].get("title", ""),
+                        titles=[chat.get("title", "") for chat in sidebar_chats[:5]],
                         changed=len(changed_chats),
                     )
 
@@ -903,10 +919,11 @@ async def main() -> None:
                     chat for chat in sidebar_chats
                     if not _should_ignore_sidebar_chat(chat) and int(chat.get("unreadCount", 0)) > 0 and not chat.get("isMinePreview")
                 ]
+                bootstrap_chat = _pick_bootstrap_chat(sidebar_chats)
                 open_targets = changed_chats or (
                     fallback_targets[:1]
-                    if (current_is_onboarding or not current_has_composer or not _is_valid_chat_title(current_chat_name))
-                    else []
+                    if fallback_targets and (current_is_onboarding or not current_has_composer or not _is_valid_chat_title(current_chat_name))
+                    else ([bootstrap_chat] if bootstrap_chat and (current_is_onboarding or not current_has_composer or not _is_valid_chat_title(current_chat_name)) else [])
                 )
 
                 if open_targets:
