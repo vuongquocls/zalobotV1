@@ -463,6 +463,16 @@ async def _capture_chat_state(page) -> dict:
                     if (!text) return true;
 
                     const normalized = text.toLowerCase();
+                    const lines = text.split('\\n').map((line) => line.trim()).filter(Boolean);
+                    const looksLikeEmojiShortcut = (line) => {
+                        if (/^\\/-[a-z0-9_-]+$/i.test(line)) return true;
+                        if (/^[:;=8xX][-']?[)(DPpOo>/\\\\|]$/.test(line)) return true;
+                        if (/^:-\\(\\($/.test(line)) return true;
+                        if (/^:-[a-z]$/i.test(line)) return true;
+                        return false;
+                    };
+                    if (lines.length >= 3 && lines.every(looksLikeEmojiShortcut)) return true;
+
                     if (isUtilityLine(text)) return true;
                     if (normalized === normalizedChatName) return true;
                     if (normalized === 'hôm nay' || normalized === 'hom nay') return true;
