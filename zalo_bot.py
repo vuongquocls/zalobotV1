@@ -32,6 +32,7 @@ from message_builder import (
     build_no_work_message,
     build_pending_tasks_message,
     build_today_tasks_message,
+    build_upcoming_tasks_message,
 )
 from sheet_reader import (
     fetch_all_tasks,
@@ -215,6 +216,15 @@ def _is_group_text_directed_to_bot(text: str) -> bool:
         "vai tro cua em",
         "em la ai",
         "gioi thieu ve em",
+        "hom nay co nhiem vu",
+        "hom nay co viec",
+        "hom nay can lam",
+        "hom nay can thuc hien",
+        "nhiem vu nao can thuc hien",
+        "3 ngay toi",
+        "ba ngay toi",
+        "sap toi co viec",
+        "sap den han",
     )
     return any(pattern in normalized for pattern in direct_bot_questions)
 
@@ -378,35 +388,12 @@ async def _send_message(page, text: str) -> bool:
             await page.keyboard.press(f"{modifier}+A")
             await page.keyboard.press("Delete")
             await page.wait_for_timeout(200)
-
-            inserted = await page.evaluate(
-            """
-            (messageText) => {
-                const input = ['#richInput', '#chatInput', '[placeholder*="Nhập @"]', '[placeholder*="tin nhắn tới"]', '[placeholder*="tin nhan toi"]', '[role="textbox"]', 'footer [contenteditable="true"]', 'div[contenteditable="true"]']
-                    .map((selector) => document.querySelector(selector))
-                    .find(Boolean);
-
-                if (!input) return false;
-
-                input.focus();
-                const selection = window.getSelection();
-                if (selection) {
-                    selection.removeAllRanges();
-                    const range = document.createRange();
-                    range.selectNodeContents(input);
-                    selection.addRange(range);
-                    document.execCommand('delete', false);
-                }
-
-                document.execCommand('insertText', false, messageText);
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                return true;
-            }
-            """,
-            text,
-            )
-            if not inserted:
-                await input_box.fill(text)
+            lines = text.split("\n")
+            for index, line in enumerate(lines):
+                if line:
+                    await page.keyboard.insert_text(line)
+                if index < len(lines) - 1:
+                    await page.keyboard.press("Shift+Enter")
         await page.wait_for_timeout(300)
         await page.keyboard.press("Enter")
         _log_event("reply.success", preview=text[:80])
@@ -501,6 +488,7 @@ async def _capture_chat_state(page) -> dict:
                     if (normalized === 'hôm nay' || normalized === 'hom nay') return true;
                     if (normalized === 'hôm qua' || normalized === 'hom qua') return true;
                     if (normalized === 'đã nhận' || normalized === 'da nhan') return true;
+                    if (normalized.includes('đang soạn tin') || normalized.includes('dang soan tin')) return true;
                     if (normalized === 'tin nhắn' || normalized === 'tin nhan') return true;
                     if (normalized === 'tải về để xem lâu dài' || normalized === 'tai ve de xem lau dai') return true;
                     if (normalized.startsWith('sử dụng ứng dụng zalo pc') || normalized.startsWith('su dung ung dung zalo pc')) return true;
@@ -1060,6 +1048,13 @@ async def _handle_natural_language(page, text: str, chat_type: str) -> None:
             tasks = fetch_all_tasks()
             reply = build_today_tasks_message(get_today_tasks(tasks))
             _log_event("sheet.today.reply", count=reply.count("* Chủ đề/Tiêu đề bài viết:"))
+            await _send_message(page, reply)
+            return
+
+        if intent == "upcoming_tasks":
+            tasks = fetch_all_tasks()
+            reply = build_upcoming_tasks_message(get_upcoming_tasks(days_ahead=DAYS_AHEAD, tasks=tasks), days_ahead=DAYS_AHEAD)
+            _log_event("sheet.upcoming.reply", count=reply.count("* Chủ đề/Tiêu đề bài viết:"))
             await _send_message(page, reply)
             return
 

@@ -76,6 +76,37 @@ def build_today_tasks_message(today_tasks: list["Task"]) -> str:
     return "\n".join(lines)
 
 
+def build_upcoming_tasks_message(upcoming_tasks: list["Task"], days_ahead: int = 3) -> str:
+    """Format cau tra loi khi nguoi dung hoi viec sap toi."""
+    now = datetime.now()
+    start_str = now.strftime("%d/%m/%Y")
+    end_str = datetime.fromordinal(now.date().toordinal() + days_ahead).strftime("%d/%m/%Y")
+    if not upcoming_tasks:
+        return (
+            f"TRONG {days_ahead} NGÀY TỚI, từ ngày {start_str} đến {end_str}, không có việc nào trong Google Sheet.\n"
+            f"* Link theo dõi: {_sheet_url()}"
+        )
+
+    lines = [
+        f"TRONG {days_ahead} NGÀY TỚI, từ ngày {start_str} đến {end_str}, có {len(upcoming_tasks)} việc:",
+    ]
+    sorted_tasks = sorted(upcoming_tasks, key=lambda task: (task.due_date or datetime.max, task.row_number))
+
+    for index, task in enumerate(sorted_tasks, start=1):
+        if len(sorted_tasks) > 1:
+            lines.append("")
+            lines.append(f"Việc {index}:")
+
+        lines.append(f"* Ngày đăng dự kiến: {task.due_date_raw or '(chưa rõ ngày)'}")
+        lines.append(f"* Chủ đề/Tiêu đề bài viết: {task.topic}")
+        lines.append(f"* Đơn vị/Cá nhân thực hiện: {task.assignee or '(chưa giao)'}")
+        lines.append(f"* Trạng thái: {task.status or '(chưa cập nhật)'}")
+        lines.append("* Lưu ý: ")
+        lines.append(f"* Link theo dõi: {_sheet_url()}")
+
+    return "\n".join(lines)
+
+
 def build_daily_reminder(
     today_tasks: list["Task"],
     overdue_tasks: list["Task"],
