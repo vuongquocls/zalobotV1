@@ -142,8 +142,34 @@ def _extract_command(text: str) -> tuple[str, str] | None:
     if not match:
         return None
     command = match.group(1).strip().lower()
-    payload = match.group(2).strip()
+    payload = _clean_command_payload(command, match.group(2).strip())
     return command, payload
+
+
+def _clean_command_payload(command: str, payload: str) -> str:
+    """Remove duplicated command prefix from Zalo previews such as '/hotrobai /hotrobai ...'."""
+    cleaned = payload.strip()
+    while cleaned:
+        match = re.match(rf"^/?{re.escape(command)}\b\s*", cleaned, flags=re.IGNORECASE)
+        if not match:
+            break
+        cleaned = cleaned[match.end():].strip()
+    return cleaned
+
+
+def _extract_command_text_from_sidebar(chat: dict) -> str:
+    """Use sidebar preview as source of truth for slash commands when the chat pane is stale."""
+    if chat.get("isMinePreview"):
+        return ""
+
+    for key in ("preview", "title", "rawText"):
+        value = str(chat.get(key, "") or "").replace("\xa0", " ").strip()
+        if not value:
+            continue
+        match = COMMAND_RE.search(value)
+        if match:
+            return value[match.start():].strip()
+    return ""
 
 
 def _strip_accents(value: str) -> str:
@@ -532,6 +558,12 @@ async def _capture_chat_state(page) -> dict:
                     if (normalized === 'hôm qua' || normalized === 'hom qua') return true;
                     if (normalized === 'đã nhận' || normalized === 'da nhan') return true;
                     if (normalized.includes('đang soạn tin') || normalized.includes('dang soan tin')) return true;
+                    if (normalized.startsWith('hôm nay, ngày') || normalized.startsWith('hom nay, ngay')) return true;
+                    if (normalized.startsWith('trong 3 ngày tới') || normalized.startsWith('trong 3 ngay toi')) return true;
+                    if (normalized.startsWith('danh sách việc chưa xong') || normalized.startsWith('danh sach viec chua xong')) return true;
+                    if (normalized.startsWith('nhắc việc truyền thông') || normalized.startsWith('nhac viec truyen thong')) return true;
+                    if (normalized.startsWith('hướng dẫn sử dụng bot') || normalized.startsWith('huong dan su dung bot')) return true;
+                    if (normalized.startsWith('em da ghi nho') || normalized.startsWith('em đã ghi nhớ')) return true;
                     if (normalized === 'tin nhắn' || normalized === 'tin nhan') return true;
                     if (normalized === 'tải về để xem lâu dài' || normalized === 'tai ve de xem lau dai') return true;
                     if (normalized.startsWith('sử dụng ứng dụng zalo pc') || normalized.startsWith('su dung ung dung zalo pc')) return true;
@@ -1140,12 +1172,13 @@ async def _maybe_process_latest_message(
     if signature == last_processed_signature.get(chat_name):
         return False
 
-    if only_if_reply_needed and not _should_reply(chat_type, latest_message):
+    command = _extract_command(latest_message)
+    if only_if_reply_needed and not command and not _should_reply(chat_type, latest_message):
         return False
 
     now_monotonic = time.monotonic()
     last_time = last_reply_time.get(chat_name, 0.0)
-    if now_monotonic - last_time < REPLY_COOLDOWN_SECONDS:
+    if not command and now_monotonic - last_time < REPLY_COOLDOWN_SECONDS:
         return False
 
     _log_event("msg.new", chat=chat_name, chat_type=chat_type, text=latest_message[:200])
@@ -1342,6 +1375,27 @@ async def main() -> None:
                     )
 
                     if not has_composer or is_onboarding or not incoming_messages:
+                        sidebar_command_text = _extract_command_text_from_sidebar(chat)
+                        if has_composer and not is_onboarding and sidebar_command_text:
+                            _log_event(
+                                "sidebar.command.used",
+                                chat=chat_name,
+                                command_text=sidebar_command_text[:200],
+                            )
+                            incoming_messages = [sidebar_command_text]
+                        else:
+                            continue
+
+                    sidebar_command_text = _extract_command_text_from_sidebar(chat)
+                    if sidebar_command_text and (not incoming_messages or incoming_messages[-1] != sidebar_command_text):
+                        _log_event(
+                            "sidebar.command.used",
+                            chat=chat_name,
+                            command_text=sidebar_command_text[:200],
+                        )
+                        incoming_messages = [*incoming_messages, sidebar_command_text]
+
+                    if not incoming_messages:
                         continue
 
                     active_chat_latest_seen[chat_name] = incoming_messages[-1]
