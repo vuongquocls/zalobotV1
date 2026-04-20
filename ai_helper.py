@@ -7,6 +7,7 @@ Hỗ trợ nhiều LLM miễn phí: OpenRouter → Groq → Gemini → Ollama (f
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -59,7 +60,7 @@ if _gemini_key:
 
 # 4. Ollama local/cloud models (không cần API key ở code bot)
 _ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-_ollama_models_raw = os.getenv("OLLAMA_MODELS", "kimi-k2.5:cloud,gemma4:31b-cloud")
+_ollama_models_raw = os.getenv("OLLAMA_MODELS", "gemma4:31b-cloud,kimi-k2.5:cloud")
 for _ollama_model in [model.strip() for model in _ollama_models_raw.split(",") if model.strip()]:
     PROVIDERS.append({
         "type": "ollama",
@@ -94,6 +95,25 @@ def _build_article_prompt(task: "Task", extra_request: str = "") -> str:
     return "\n".join(lines)
 
 
+def _clean_model_output(text: str) -> str:
+    """Loại bỏ thought/reasoning nếu model lỡ trả chung vào content."""
+    cleaned = text or ""
+    cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", cleaned)
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(
+        r"<\|channel\>thought.*?<channel\|>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    cleaned = re.sub(
+        r"(?is)^\s*thinking\.\.\..*?\.\.\.done thinking\.\s*",
+        "",
+        cleaned,
+    )
+    return cleaned.strip()
+
+
 async def _call_llm(
     system: str,
     user: str,
@@ -112,6 +132,7 @@ async def _call_llm(
                 result = await _call_ollama(provider, system, user, max_tokens)
             else:
                 result = await _call_openai_compatible(provider, system, user, max_tokens)
+            result = _clean_model_output(result)
             if result:
                 print(f"   ✅ AI: dùng {provider['name']} ({provider['model']})")
                 return result
@@ -142,7 +163,7 @@ async def _call_openai_compatible(provider: dict, system: str, user: str, max_to
         temperature=0.7,
     )
     content = response.choices[0].message.content or ""
-    return content.strip()
+    return _clean_model_output(content)
 
 
 async def _call_ollama(provider: dict, system: str, user: str, max_tokens: int) -> str:
@@ -156,6 +177,7 @@ async def _call_ollama(provider: dict, system: str, user: str, max_tokens: int) 
             {"role": "user", "content": user},
         ],
         "stream": False,
+        "think": False,
         "options": {
             "temperature": 0.7,
             "num_predict": max_tokens,
@@ -169,7 +191,7 @@ async def _call_ollama(provider: dict, system: str, user: str, max_tokens: int) 
 
     message = data.get("message") or {}
     content = message.get("content") or data.get("response") or ""
-    return str(content).strip()
+    return _clean_model_output(str(content))
 
 
 async def draft_article(task: "Task", extra_request: str = "") -> str:
