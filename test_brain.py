@@ -8,6 +8,10 @@ class BrainIntentTests(unittest.TestCase):
         text = "Em hãy giới thiệu về em cho anh biết. Em có thể làm được gì?"
         self.assertEqual(brain.classify_intent(text), "capabilities")
 
+    def test_capabilities_short_direct_question(self):
+        self.assertEqual(brain.classify_intent("em có thể làm gì?"), "capabilities")
+        self.assertEqual(brain.classify_intent("nhiệm vụ của em là gì?"), "capabilities")
+
     def test_today_tasks_intent(self):
         self.assertEqual(brain.classify_intent("việc hôm nay có gì?"), "today_tasks")
 

@@ -24,51 +24,25 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # KIEN THUC NEN TANG
 # ============================================================================
-QUY_CHE_TRUYEN_THONG = """
-## THONG BAO TRIEN KHAI HOAT DONG NHOM TRUYEN THONG VQG YOK DON
-Can cu Ke hoach so 232/KH-VYD ngay 15/4/2026
-
-### I. THANH PHAN NHOM TRUYEN THONG
-
-1. Nhom dieu hanh nong cot:
-- Ong Pham Van Vuong Quoc, Pho Truong phong TCHC: dau moi dieu phoi va Admin
-- Ong Tran Duc Phuong, Pho Giam doc TT GDMT&DV
-- Ong Nguyen Trung Hieu, Pho Truong phong KH&HTQT
-- Ong Tran Xuan Hoa, Bi thu Doan TNCSHCM, Phap che Hat Kiem lam
-- Ong Truong Van Nghia, NV Phong KH&HTQT
-- Ong Tran Tuan Nguyen, NV VP Hat Kiem lam
-- Ong Luc Van Nam, NV Phong TCHC
-- Ong Sung A Su, NV TT GDMT&DV
-- Ong Y Siem Hdớt, NV TT GDMT&DV
-
-2. Mang luoi thanh vien mo rong: vien chuc toan Vuon dang ky tham gia cung cap tu lieu.
-
-### II. QUY CHE HOAT DONG
-- Kenh dieu hanh: Zalo de trao doi nhanh, Google Sheets de quan ly ke hoach thang,
-  phan cong va tien do.
-- Tu lieu phat sinh gui trong ngay. Noi dung dinh ky gui truoc ngay 25 hang thang.
-- Bai thong thuong: ca nhan tu chu dong, chiu trach nhiem; vien chuc truc thuoc don vi
-  phai duoc lanh dao duyet truoc.
-- Noi dung nhay cam: phai thao luan trong Nhom Truyen thong, xin y kien Ban Giam doc
-  truoc khi dang.
-- Fanpage huong toi truyen thong tich cuc ve bao ton thien nhien, du lich sinh thai,
-  gan ket cong dong.
-- Tan suat goi y: 02 ngay/01 bai. Khung gio: 07h-08h hoac 18h-19h.
-- Tieu chuan: khong chinh tri/ton giao; van phong thong nhat, ngan gon, khong loi
-  chinh ta; 03-05 anh/bai; video toi da 03 phut.
-- Tin nhay cam/khung hoang: khong tranh luan truc tiep tren Fanpage, khong tu y phat
-  ngon tren trang ca nhan, khong cung cap tai lieu noi bo cho bao chi.
-- Bai dang: tieu de in hoa; toi da 01-02 emoji; moi doan 04-05 dong; hashtag cuoi bai.
+BOT_MISSION = """
+Em là Nhân Viên Mới Yok Đôn, trợ lý AI của Nhóm Truyền thông VQG Yok Đôn.
+Nhiệm vụ chính:
+- Đọc Google Sheet tiến độ truyền thông.
+- Nhắc việc hôm nay, việc quá hạn và việc 3 ngày tới.
+- Trả lời câu hỏi về công việc, người phụ trách, trạng thái và thời hạn.
+- Dự thảo bài viết, caption, kịch bản video ngắn và gợi ý tư liệu.
+- Ghi nhớ chỉ dẫn người dùng dạy qua lệnh /hoc.
+Giới hạn bắt buộc: không bịa dữ liệu, không tự nhận đã xem Sheet nếu context không có dữ liệu.
 """
 
-BOT_MISSION = """
-BAN CHAT CONG VIEC CUA BOT:
-- Em la Nhan Vien Moi Yok Don, tro ly AI cua Nhom Truyen thong VQG Yok Don.
-- Viec chinh: doc Google Sheet tien do truyen thong, nhac viec hom nay va 3 ngay toi.
-- Ho tro ca nhan/nhom: tra loi cau hoi ve cong viec, tien do, quy che va noi dung.
-- Ho tro sang tao: du thao bai viet, caption, kich ban video ngan, goi y anh/canh quay.
-- Tu hoc: ghi nho chi dan nguoi dung day qua /hoc de ap dung ve sau.
-- Khong bia so lieu, khong khang dinh neu khong co trong context.
+WORKING_RULES = """
+Nguyên tắc trả lời:
+- Tiếng Việt có dấu, xưng "Em", gọi người dùng là "Anh/Chị".
+- Trả lời như trợ lý công việc của nhóm truyền thông, không nói xã giao rỗng.
+- Với câu hỏi về tiến độ: ưu tiên dữ liệu trong context, nêu rõ nếu thiếu dữ liệu.
+- Với yêu cầu soạn nội dung: hỏi thêm nếu thiếu chủ đề/kênh/độ dài; nếu đủ thì viết nháp ngay.
+- Với nội dung nhạy cảm: khuyến nghị trao đổi trong nhóm và xin ý kiến người có thẩm quyền.
+- Trong nhóm: trả lời ngắn, đi thẳng vào việc.
 """
 
 INTENT_LABELS = {
@@ -108,7 +82,23 @@ def classify_intent(message: str, chat_type: str = "personal") -> str:
     if not text:
         return "unknown"
 
-    if _has_any(text, ("em la ai", "ban la ai", "gioi thieu", "lam duoc gi", "nhiem vu cua em", "vai tro cua em")):
+    if _has_any(
+        text,
+        (
+            "em la ai",
+            "ban la ai",
+            "gioi thieu",
+            "lam duoc gi",
+            "co the lam gi",
+            "co the lam duoc gi",
+            "em giup duoc gi",
+            "giup duoc gi",
+            "em biet lam gi",
+            "nhiem vu cua em",
+            "nhiem vu cua em la gi",
+            "vai tro cua em",
+        ),
+    ):
         return "capabilities"
 
     if _has_any(text, ("hay nho", "ghi nho", "hoc dieu nay", "nho rang")):
@@ -147,15 +137,14 @@ def build_capability_reply() -> str:
         [
             "Dạ, em là Nhân Viên Mới Yok Đôn, trợ lý AI của Nhóm Truyền thông VQG Yok Đôn.",
             "",
-            "Em có thể hỗ trợ Anh/Chị các việc chính sau:",
-            "1. Đọc bảng tiến độ truyền thông để nhắc việc hôm nay, việc quá hạn và việc 3 ngày tới.",
-            "2. Trả lời câu hỏi về chủ đề, người phụ trách, trạng thái và kế hoạch trong Google Sheet.",
-            "3. Dự thảo bài viết, caption, kịch bản video ngắn và gợi ý tư liệu truyền thông.",
-            "4. Nhắc lại các nguyên tắc truyền thông, đặc biệt với nội dung nhạy cảm.",
-            "5. Ghi nhớ chỉ dẫn mới khi Anh/Chị dùng lệnh /hoc.",
+            "Nhiệm vụ của em là:",
+            "1. Đọc Google Sheet tiến độ truyền thông.",
+            "2. Nhắc việc hôm nay, việc quá hạn và việc 3 ngày tới.",
+            "3. Trả lời câu hỏi về việc, người phụ trách, trạng thái và thời hạn.",
+            "4. Dự thảo bài viết, caption, kịch bản video ngắn khi Anh/Chị yêu cầu.",
+            "5. Ghi nhớ chỉ dẫn mới bằng lệnh /hoc.",
             "",
-            "Anh/Chị có thể nhắn: \"việc hôm nay có gì?\", \"3 ngày tới có việc nào?\",",
-            "\"soạn giúp bài về voi Yok Đôn\", hoặc dùng /nhacviec.",
+            "Anh/Chị có thể nhắn: \"việc hôm nay có gì?\", \"3 ngày tới có việc nào?\", \"soạn giúp bài về voi Yok Đôn\", hoặc dùng /nhacviec.",
         ]
     )
 
@@ -166,8 +155,7 @@ def _build_system_prompt(intent: str) -> str:
 
 {BOT_MISSION}
 
-KIẾN THỨC NỀN:
-{QUY_CHE_TRUYEN_THONG}
+{WORKING_RULES}
 
 QUY TRÌNH SUY NGHĨ NỘI BỘ, KHÔNG IN RA:
 1. Xác định người dùng đang cần việc gì theo intent đã cho.

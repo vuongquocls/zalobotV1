@@ -199,6 +199,25 @@ def _is_bot_mentioned(text: str) -> bool:
     return bool(_find_bot_mention_alias(text))
 
 
+def _is_group_text_directed_to_bot(text: str) -> bool:
+    """Zalo native mentions can be stripped from bubble text; keep safe direct-ask fallback."""
+    normalized = _simplify_text(text)
+    if not normalized:
+        return False
+
+    direct_bot_questions = (
+        "em co the lam gi",
+        "em co the lam duoc gi",
+        "em giup duoc gi",
+        "em biet lam gi",
+        "nhiem vu cua em",
+        "vai tro cua em",
+        "em la ai",
+        "gioi thieu ve em",
+    )
+    return any(pattern in normalized for pattern in direct_bot_questions)
+
+
 def _should_reply(chat_type: str, text: str) -> bool:
     if not text.strip():
         return False
@@ -209,6 +228,9 @@ def _should_reply(chat_type: str, text: str) -> bool:
     matched_alias = _find_bot_mention_alias(text)
     if chat_type == "group" and matched_alias:
         _log_event("group.mention.matched", alias=matched_alias, text=(text or "")[:200])
+    elif chat_type == "group" and _is_group_text_directed_to_bot(text):
+        _log_event("group.directed.matched", text=(text or "")[:200])
+        return True
     elif chat_type == "group":
         _log_event(
             "group.ignored",
