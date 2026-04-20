@@ -1084,8 +1084,7 @@ async def main() -> None:
                 if current_is_onboarding:
                     clicked_sync = await _maybe_click_sync_recent_messages(page)
                     if clicked_sync:
-                        await asyncio.sleep(2)
-                        continue
+                        await asyncio.sleep(1)
 
                 fallback_targets = [
                     chat for chat in sidebar_chats
