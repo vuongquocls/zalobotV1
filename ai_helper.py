@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_AI_FALLBACK = (
-    "Em đang bận xu ly AI nen chua tra loi duoc ngay. "
-    "Anh/Chị thu nhan lai sau it phut giup em nhe."
+    "Em đang bận xử lý nên chưa trả lời ngay được. "
+    "Anh/Chị thử nhắn lại sau ít phút giúp em nhé."
 )
 
 if TYPE_CHECKING:
@@ -131,8 +131,8 @@ async def draft_article(task: "Task", extra_request: str = "") -> str:
         system,
         prompt,
         fallback_message=(
-            "Em tam thoi chua soan duoc bai viet vi dich vu AI dang ban. "
-            "Anh/Chị thu lai sau it phut giup em nhe."
+            "Em tạm thời chưa soạn được bài viết vì dịch vụ AI đang bận. "
+            "Anh/Chị thử lại sau ít phút giúp em nhé."
         ),
     )
 
@@ -152,8 +152,8 @@ async def draft_content_from_request(request_text: str, context: str = "") -> st
         user,
         max_tokens=1500,
         fallback_message=(
-            "Em tam thoi chua du thao duoc noi dung vi dich vu AI dang ban. "
-            "Anh/Chị thu lai sau it phut giup em nhe."
+            "Em tạm thời chưa dự thảo được nội dung vì dịch vụ AI đang bận. "
+            "Anh/Chị thử lại sau ít phút giúp em nhé."
         ),
     )
 

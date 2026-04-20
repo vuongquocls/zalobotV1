@@ -154,11 +154,29 @@ def _simplify_text(value: str) -> str:
     return raw
 
 
+def _build_bot_aliases() -> list[str]:
+    aliases: set[str] = set()
+    for name in BOT_NAMES:
+        simplified = _simplify_text(name)
+        if not simplified:
+            continue
+        aliases.add(simplified)
+        aliases.add(f"@{simplified}")
+        aliases.add(simplified.replace(" ", ""))
+        if simplified.startswith("nhan vien moi "):
+            aliases.add("nhan vien moi")
+            aliases.add("@nhan vien moi")
+    return sorted((alias for alias in aliases if len(alias) >= 4), key=len, reverse=True)
+
+
+BOT_ALIASES = _build_bot_aliases()
+
+
 def _is_bot_mentioned(text: str) -> bool:
-    normalized = _simplify_text(text)
+    normalized = _simplify_text(text).replace("@ ", "@")
     if not normalized:
         return False
-    return any(_simplify_text(name) in normalized for name in BOT_NAMES)
+    return any(alias in normalized for alias in BOT_ALIASES)
 
 
 def _should_reply(chat_type: str, text: str) -> bool:
@@ -993,6 +1011,38 @@ async def _process_chat_message(page, chat_name: str, chat_type: str, text: str)
         await _handle_natural_language(page, text, chat_type)
 
 
+async def _maybe_process_latest_message(
+    page,
+    chat_name: str,
+    chat_type: str,
+    incoming_messages: list[str],
+    last_processed_signature: dict[str, str],
+    last_reply_time: dict[str, float],
+    only_if_reply_needed: bool = False,
+) -> bool:
+    if not incoming_messages:
+        return False
+
+    latest_message = incoming_messages[-1]
+    signature = f"{chat_name}:{latest_message}"
+    if signature == last_processed_signature.get(chat_name):
+        return False
+
+    if only_if_reply_needed and not _should_reply(chat_type, latest_message):
+        return False
+
+    now_monotonic = time.monotonic()
+    last_time = last_reply_time.get(chat_name, 0.0)
+    if now_monotonic - last_time < REPLY_COOLDOWN_SECONDS:
+        return False
+
+    _log_event("msg.new", chat=chat_name, chat_type=chat_type, text=latest_message[:200])
+    await _process_chat_message(page, chat_name, chat_type, latest_message)
+    last_processed_signature[chat_name] = signature
+    last_reply_time[chat_name] = now_monotonic
+    return True
+
+
 async def _detect_session_state(page) -> str:
     ready_locator = await _get_visible_locator(page, LOGIN_READY_SELECTORS)
     if ready_locator is not None:
@@ -1050,6 +1100,7 @@ async def main() -> None:
         last_processed_signature: dict[str, str] = {}
         last_reply_time: dict[str, float] = {}
         sidebar_state: dict[str, str] = {}
+        active_chat_latest_seen: dict[str, str] = {}
         sidebar_bootstrapped = False
         last_session_state = ""
 
@@ -1106,6 +1157,32 @@ async def main() -> None:
                     onboarding=current_is_onboarding,
                 )
 
+                if (
+                    current_has_composer
+                    and not current_is_onboarding
+                    and _is_valid_chat_title(current_chat_name)
+                    and current_incoming_messages
+                ):
+                    current_latest_message = current_incoming_messages[-1]
+                    previous_current_message = active_chat_latest_seen.get(current_chat_name)
+                    active_chat_latest_seen[current_chat_name] = current_latest_message
+                    if previous_current_message is not None and current_latest_message != previous_current_message:
+                        _log_event(
+                            "current_chat.changed",
+                            chat=current_chat_name,
+                            chat_type=current_chat_type,
+                            text=current_latest_message[:200],
+                        )
+                        await _maybe_process_latest_message(
+                            page,
+                            current_chat_name,
+                            current_chat_type,
+                            current_incoming_messages,
+                            last_processed_signature,
+                            last_reply_time,
+                            only_if_reply_needed=True,
+                        )
+
                 if current_is_onboarding:
                     clicked_sync = await _maybe_click_sync_recent_messages(page)
                     if clicked_sync:
@@ -1155,20 +1232,16 @@ async def main() -> None:
                     if not has_composer or is_onboarding or not incoming_messages:
                         continue
 
-                    latest_message = incoming_messages[-1]
-                    signature = f"{chat_name}:{latest_message}"
-                    if signature == last_processed_signature.get(chat_name):
-                        continue
-
-                    now_monotonic = time.monotonic()
-                    last_time = last_reply_time.get(chat_name, 0.0)
-                    if now_monotonic - last_time < REPLY_COOLDOWN_SECONDS:
-                        continue
-
-                    _log_event("msg.new", chat=chat_name, chat_type=chat_type, text=latest_message[:200])
-                    await _process_chat_message(page, chat_name, chat_type, latest_message)
-                    last_processed_signature[chat_name] = signature
-                    last_reply_time[chat_name] = now_monotonic
+                    active_chat_latest_seen[chat_name] = incoming_messages[-1]
+                    await _maybe_process_latest_message(
+                        page,
+                        chat_name,
+                        chat_type,
+                        incoming_messages,
+                        last_processed_signature,
+                        last_reply_time,
+                        only_if_reply_needed=False,
+                    )
 
                 await asyncio.sleep(2)
             except Exception as exc:
