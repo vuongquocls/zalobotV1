@@ -382,23 +382,64 @@ async def _send_message(page, text: str) -> bool:
             raise RuntimeError("Khong tim thay o nhap tin nhan.")
 
         modifier = _platform_modifier()
-        tag_name = (await input_box.evaluate("(node) => node.tagName || ''")).upper()
-        if tag_name in {"INPUT", "TEXTAREA"}:
+        await input_box.click()
+        try:
             await input_box.fill("")
             await input_box.fill(text)
-        else:
+            input_method = "locator.fill"
+        except Exception:
+            # Zalo Web occasionally exposes the composer as a custom contenteditable
+            # where Playwright fill() is rejected. In that case, update the DOM and
+            # dispatch input events so Zalo's internal state receives the full text.
+            await input_box.evaluate(
+                """
+                (node, text) => {
+                    node.focus();
+                    if ('value' in node) {
+                        node.value = text;
+                    } else {
+                        node.innerText = text;
+                    }
+                    node.dispatchEvent(new InputEvent('input', {
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: 'insertText',
+                        data: text,
+                    }));
+                    node.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                """,
+                text,
+            )
+            input_method = "dom.input"
+
+        composer_text = await input_box.evaluate(
+            """
+            (node) => {
+                if ('value' in node) return node.value || '';
+                return node.innerText || node.textContent || '';
+            }
+            """
+        )
+        expected_tail = next((line for line in reversed(text.splitlines()) if line.strip()), "")
+        if expected_tail and expected_tail not in composer_text:
             await page.keyboard.press(f"{modifier}+A")
             await page.keyboard.press("Delete")
             await page.wait_for_timeout(200)
-            lines = text.split("\n")
-            for index, line in enumerate(lines):
-                if line:
-                    await page.keyboard.insert_text(line)
-                if index < len(lines) - 1:
-                    await page.keyboard.press("Shift+Enter")
+            await page.keyboard.insert_text(text)
+            input_method = f"{input_method}+keyboard.insert_text"
+            composer_text = await input_box.evaluate(
+                """
+                (node) => {
+                    if ('value' in node) return node.value || '';
+                    return node.innerText || node.textContent || '';
+                }
+                """
+            )
+
         await page.wait_for_timeout(300)
         await page.keyboard.press("Enter")
-        _log_event("reply.success", preview=text[:80])
+        _log_event("reply.success", preview=text[:80], input_method=input_method, composer_length=len(composer_text))
         return True
     except Exception as exc:
         _log_event("reply.error", error=_serialize_error(exc))
@@ -1017,7 +1058,8 @@ async def _handle_command(page, command: str, payload: str, chat_name: str) -> N
             return
 
         if command == "nhacviec":
-            await _send_message(page, _build_daily_message())
+            tasks = fetch_all_tasks()
+            await _send_message(page, build_today_tasks_message(get_today_tasks(tasks)))
             return
 
         if command == "xemviec":

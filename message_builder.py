@@ -223,27 +223,31 @@ def build_task_detail(task: "Task") -> str:
 def build_pending_tasks_message(tasks: list["Task"]) -> str:
     """Danh sach cac viec chua xong de tra loi lenh /xemviec."""
     now_str = datetime.now().strftime("%d/%m/%Y")
-    sections = [
-        f"DANH SACH VIEC CHUA XONG - {now_str}",
-        "=" * 36,
-    ]
-
     pending_tasks = [task for task in tasks if not task.is_completed]
     if not pending_tasks:
-        sections.append("")
-        sections.append("Khong co viec nao dang mo.")
-        sections.append(f"Xem Sheet: {_sheet_url()}")
-        return "\n".join(sections)
+        return (
+            f"DANH SÁCH VIỆC CHƯA XONG - {now_str}, không có việc nào đang mở.\n"
+            f"* Link theo dõi: {_sheet_url()}"
+        )
 
     pending_tasks.sort(key=lambda task: task.due_date or datetime.max)
-    for task in pending_tasks[:20]:
+    visible_tasks = pending_tasks[:20]
+    sections = [
+        f"DANH SÁCH VIỆC CHƯA XONG - {now_str}, có {len(pending_tasks)} việc:",
+    ]
+
+    for index, task in enumerate(visible_tasks, start=1):
         sections.append("")
-        sections.append(_task_line(task))
+        sections.append(f"Việc {index}:")
+        sections.append(f"* Ngày đăng dự kiến: {task.due_date_raw or '(chưa rõ ngày)'}")
+        sections.append(f"* Chủ đề/Tiêu đề bài viết: {task.topic}")
+        sections.append(f"* Đơn vị/Cá nhân thực hiện: {task.assignee or '(chưa giao)'}")
+        sections.append(f"* Trạng thái: {task.status or '(chưa cập nhật)'}")
+        sections.append("* Lưu ý:")
+        sections.append(f"* Link theo dõi: {_sheet_url()}")
 
     if len(pending_tasks) > 20:
         sections.append("")
-        sections.append(f"Con {len(pending_tasks) - 20} viec khac trong Sheet.")
+        sections.append(f"Còn {len(pending_tasks) - 20} việc khác trong Sheet.")
 
-    sections.append("")
-    sections.append(f"Xem Sheet: {_sheet_url()}")
     return "\n".join(sections)
