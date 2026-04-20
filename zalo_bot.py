@@ -660,7 +660,84 @@ def _pick_bootstrap_chat(chats: list[dict]) -> dict | None:
 
 async def _open_sidebar_chat(page, chat: dict) -> bool:
     try:
-        await page.mouse.click(chat["x"], chat["y"])
+        clicked = await page.evaluate(
+            """
+            ({ title, preview, fallbackX, fallbackY }) => {
+                const sidebarRight = Math.min(Math.max(window.innerWidth * 0.32, 320), 520);
+
+                const exactCandidates = [...document.querySelectorAll('div, span, p')]
+                    .filter((el) => {
+                        const text = (el.innerText || '').trim();
+                        if (!text) return false;
+                        if (text !== title && (!preview || text !== preview)) return false;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.left < 20 || rect.right > sidebarRight + 40) return false;
+                        if (rect.top < 70 || rect.bottom > window.innerHeight - 20) return false;
+                        if (rect.width < 20 || rect.height < 12) return false;
+                        return true;
+                    })
+                    .sort((a, b) => {
+                        const ra = a.getBoundingClientRect();
+                        const rb = b.getBoundingClientRect();
+                        return (ra.width * ra.height) - (rb.width * rb.height);
+                    });
+
+                const clickElement = (el) => {
+                    if (!el) return false;
+
+                    let clickable = el;
+                    while (clickable) {
+                        const rect = clickable.getBoundingClientRect();
+                        if (rect.width >= 180 && rect.height >= 36 && rect.right <= sidebarRight + 40) {
+                            break;
+                        }
+                        clickable = clickable.parentElement;
+                    }
+                    clickable = clickable || el;
+
+                    const rect = clickable.getBoundingClientRect();
+                    const x = Math.min(rect.left + 120, rect.right - 30);
+                    const y = rect.top + rect.height / 2;
+                    const target = document.elementFromPoint(x, y) || clickable;
+                    const finalEl = target.closest('a, button, [role="button"], div, span') || target;
+
+                    for (const eventName of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                        finalEl.dispatchEvent(new MouseEvent(eventName, {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: x,
+                            clientY: y,
+                            button: 0,
+                        }));
+                    }
+                    if (typeof finalEl.click === 'function') finalEl.click();
+                    return true;
+                };
+
+                for (const candidate of exactCandidates) {
+                    if (clickElement(candidate)) {
+                        return { ok: true, method: 'dom_text', title };
+                    }
+                }
+
+                const fallbackTarget = document.elementFromPoint(fallbackX, fallbackY);
+                if (fallbackTarget) {
+                    if (typeof fallbackTarget.click === 'function') fallbackTarget.click();
+                    return { ok: true, method: 'point_fallback', title };
+                }
+
+                return { ok: false, method: 'none', title };
+            }
+            """,
+            {
+                "title": chat.get("title", ""),
+                "preview": chat.get("preview", ""),
+                "fallbackX": chat["x"],
+                "fallbackY": chat["y"],
+            },
+        )
+        _log_event("chat.row.click_attempt", chat=chat.get("title", ""), result=clicked)
         await page.wait_for_timeout(1200)
 
         state = await _capture_chat_state(page)
