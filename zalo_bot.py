@@ -408,6 +408,23 @@ async def _capture_chat_state(page) -> dict:
                 };
 
                 const chatName = headerLines.find((line) => !isUtilityLine(line)) || '';
+                const normalizedChatName = chatName.toLowerCase();
+                const isUtilityMessage = (value) => {
+                    const text = (value || '').trim();
+                    if (!text) return true;
+
+                    const normalized = text.toLowerCase();
+                    if (isUtilityLine(text)) return true;
+                    if (normalized === normalizedChatName) return true;
+                    if (normalized === 'hôm nay' || normalized === 'hom nay') return true;
+                    if (normalized === 'hôm qua' || normalized === 'hom qua') return true;
+                    if (normalized === 'đã nhận' || normalized === 'da nhan') return true;
+                    if (normalized === 'tin nhắn' || normalized === 'tin nhan') return true;
+                    if (normalized === 'tải về để xem lâu dài' || normalized === 'tai ve de xem lau dai') return true;
+                    if (normalized.startsWith('sử dụng ứng dụng zalo pc') || normalized.startsWith('su dung ung dung zalo pc')) return true;
+                    if (normalized.startsWith('chào mừng đến với zalo pc') || normalized.startsWith('chao mung den voi zalo pc')) return true;
+                    return false;
+                };
 
                 const nodes = [...document.querySelectorAll('div, span')]
                     .filter((el) => {
@@ -444,7 +461,7 @@ async def _capture_chat_state(page) -> dict:
                     chatName,
                     chatType,
                     isOnboarding,
-                    incomingMessages: unique.filter((item) => !item.isMe).map((item) => item.text).slice(-10),
+                    incomingMessages: unique.filter((item) => !item.isMe && !isUtilityMessage(item.text)).map((item) => item.text).slice(-10),
                     visibleMessages: unique.map((item) => item.text).slice(-20),
                     hasComposer: Boolean(composer),
                 };
@@ -581,6 +598,7 @@ async def _scan_sidebar_chats(page) -> list[dict]:
                     const title = contentLines[0];
                     const preview = contentLines.find((line, index) => index > 0) || "";
                     if (!title) continue;
+                    if (title === 'Bạn:' || title === 'Ban:') continue;
 
                     rows.push({
                         title,
