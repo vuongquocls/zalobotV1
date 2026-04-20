@@ -69,6 +69,8 @@ ONBOARDING_PATTERNS = (
     "trải nghiệm xuyên suốt",
     "dong bo tin nhan gan day",
     "đồng bộ tin nhắn gần đây",
+    "zalo web của bạn hiện chưa có đầy đủ tin nhắn gần đây",
+    "zalo web cua ban hien chua co day du tin nhan gan day",
 )
 
 SEARCH_INPUT_SELECTORS = [
@@ -230,6 +232,44 @@ async def _focus_chat_input(page):
         await locator.click()
         return locator
     return None
+
+
+async def _maybe_click_sync_recent_messages(page) -> bool:
+    candidates = [
+        page.get_by_text("Nhấn để đồng bộ ngay"),
+        page.get_by_text("Đồng bộ ngay"),
+        page.get_by_text("Dong bo ngay"),
+        page.get_by_text("Đồng bộ"),
+    ]
+
+    for locator in candidates:
+        candidate = locator.first
+        try:
+            if await candidate.count() > 0 and await candidate.is_visible():
+                await candidate.click()
+                _log_event("sync.clicked")
+                await page.wait_for_timeout(2000)
+
+                follow_up_buttons = [
+                    page.get_by_role("button", name="Đồng ý"),
+                    page.get_by_role("button", name="Dong y"),
+                    page.get_by_role("button", name="Đồng bộ"),
+                    page.get_by_role("button", name="Đồng bộ ngay"),
+                ]
+                for button in follow_up_buttons:
+                    follow_up = button.first
+                    if await follow_up.count() > 0 and await follow_up.is_visible():
+                        await follow_up.click()
+                        _log_event("sync.confirmed")
+                        await page.wait_for_timeout(2500)
+                        break
+                return True
+        except PlaywrightError:
+            continue
+        except Exception as exc:
+            _log_event("sync.error", error=_serialize_error(exc))
+            return False
+    return False
 
 
 async def _send_message(page, text: str) -> bool:
@@ -991,6 +1031,12 @@ async def main() -> None:
                     has_composer=current_has_composer,
                     onboarding=current_is_onboarding,
                 )
+
+                if current_is_onboarding:
+                    clicked_sync = await _maybe_click_sync_recent_messages(page)
+                    if clicked_sync:
+                        await asyncio.sleep(2)
+                        continue
 
                 fallback_targets = [
                     chat for chat in sidebar_chats
