@@ -118,6 +118,19 @@ async def draft_article(task: "Task", extra_request: str = "") -> str:
     return await _call_llm(system, prompt)
 
 
+async def draft_content_from_request(request_text: str, context: str = "") -> str:
+    """Soan noi dung truyen thong tu yeu cau tu do cua nguoi dung."""
+    system = (
+        "Ban la tro ly truyen thong VQG Yok Don. "
+        "Hay du thao noi dung bang tieng Viet, dung cau truc ro rang, "
+        "co tieu de, phan noi dung va hashtag neu phu hop."
+    )
+    user = f"Hay du thao noi dung truyen thong theo yeu cau sau:\n{request_text.strip()}"
+    if context:
+        user += f"\n\nNgu canh bo sung:\n{context}"
+    return await _call_llm(system, user, max_tokens=1500)
+
+
 async def answer_question(question: str, context: str = "") -> str:
     """Trả lời câu hỏi tự do liên quan đến công việc truyền thông."""
     system = (

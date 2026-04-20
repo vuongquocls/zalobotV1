@@ -9,8 +9,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from sheet_reader import get_sheet_public_url
+
 if TYPE_CHECKING:
     from sheet_reader import Task
+
+
+def _sheet_url() -> str:
+    return get_sheet_public_url() or "(chua cau hinh link Sheet)"
 
 
 def _format_date(dt: datetime | None, raw: str = "") -> str:
@@ -38,7 +44,7 @@ def build_today_empty_message() -> str:
         f"{'=' * 36}\n\n"
         f"Hôm nay ({now_str}) chưa có nội dung nào trong Bảng kế hoạch!\n\n"
         "Anh/chị vui lòng cập nhật kế hoạch truyền thông vào Sheet giúp em nhé.\n\n"
-        "Link: https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8"
+        f"Link: {_sheet_url()}"
     )
 
 
@@ -106,7 +112,7 @@ def build_daily_reminder(
 
     # Ghi chú Google Sheet
     sections.append("")
-    sections.append("Xem chi tiết: https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8")
+    sections.append(f"Xem chi tiết: {_sheet_url()}")
 
     return "\n".join(sections)
 
@@ -119,7 +125,7 @@ def build_no_work_message() -> str:
         f"{'=' * 36}\n\n"
         "Hiện tại chưa có công việc nào cần nhắc.\n"
         "Mọi người nhớ cập nhật tiến độ vào Sheet nhé!\n\n"
-        "Xem Sheet: https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8"
+        f"Xem Sheet: {_sheet_url()}"
     )
 
 
@@ -131,7 +137,7 @@ def build_sheet_empty_message() -> str:
         f"{'=' * 36}\n\n"
         "Sheet chưa có nội dung cho kỳ này.\n"
         "Anh/chị vui lòng điền kế hoạch truyền thông vào Sheet!\n\n"
-        "Link: https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8"
+        f"Link: {_sheet_url()}"
     )
 
 
@@ -151,3 +157,32 @@ def build_task_detail(task: "Task") -> str:
     if task.link:
         lines.append(f"Link: {task.link}")
     return "\n".join(lines)
+
+
+def build_pending_tasks_message(tasks: list["Task"]) -> str:
+    """Danh sach cac viec chua xong de tra loi lenh /xemviec."""
+    now_str = datetime.now().strftime("%d/%m/%Y")
+    sections = [
+        f"DANH SACH VIEC CHUA XONG - {now_str}",
+        "=" * 36,
+    ]
+
+    pending_tasks = [task for task in tasks if not task.is_completed]
+    if not pending_tasks:
+        sections.append("")
+        sections.append("Khong co viec nao dang mo.")
+        sections.append(f"Xem Sheet: {_sheet_url()}")
+        return "\n".join(sections)
+
+    pending_tasks.sort(key=lambda task: task.due_date or datetime.max)
+    for task in pending_tasks[:20]:
+        sections.append("")
+        sections.append(_task_line(task))
+
+    if len(pending_tasks) > 20:
+        sections.append("")
+        sections.append(f"Con {len(pending_tasks) - 20} viec khac trong Sheet.")
+
+    sections.append("")
+    sections.append(f"Xem Sheet: {_sheet_url()}")
+    return "\n".join(sections)

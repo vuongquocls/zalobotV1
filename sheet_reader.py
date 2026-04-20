@@ -24,14 +24,57 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
-SHEET_GID = os.getenv("GOOGLE_SHEET_GID", "0")
+GOOGLE_SHEET_SOURCE_URL = os.getenv("GOOGLE_SHEET_SOURCE_URL", "").strip()
+
+
+def _extract_sheet_url(raw_url: str) -> str:
+    """Lay URL Google Sheet that su tu docs.google.com, ke ca khi link dau vao la redirect.zalo.me."""
+    if not raw_url:
+        return ""
+
+    parsed = urlparse(raw_url)
+    if "docs.google.com" in parsed.netloc:
+        return raw_url
+
+    if "redirect.zalo.me" in parsed.netloc:
+        query = parse_qs(parsed.query)
+        continue_values = query.get("continue", [])
+        if continue_values:
+            return unquote(continue_values[0]).strip()
+
+    return raw_url
+
+
+def _extract_sheet_id(sheet_url: str) -> str:
+    match = sheet_url.split("/d/")
+    if len(match) < 2:
+        return ""
+    return match[1].split("/", 1)[0].strip()
+
+
+def _extract_gid(sheet_url: str) -> str:
+    parsed = urlparse(sheet_url)
+    query = parse_qs(parsed.query)
+    gid_values = query.get("gid", [])
+    if gid_values and gid_values[0].strip():
+        return gid_values[0].strip()
+
+    if parsed.fragment.startswith("gid="):
+        return parsed.fragment.replace("gid=", "", 1).strip()
+
+    return ""
+
+
+SHEET_PUBLIC_URL = _extract_sheet_url(GOOGLE_SHEET_SOURCE_URL)
+SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "").strip() or _extract_sheet_id(SHEET_PUBLIC_URL)
+SHEET_GID = os.getenv("GOOGLE_SHEET_GID", "").strip() or _extract_gid(SHEET_PUBLIC_URL) or "0"
 
 # Mapping cột (0-indexed)
 COL_MONTH = 0
@@ -89,12 +132,26 @@ def _parse_date(raw: str) -> Optional[datetime]:
 
 def _fetch_csv() -> list[list[str]]:
     """Tải Google Sheet dưới dạng CSV (không cần auth, sheet phải public/shared)."""
+    if not SHEET_ID:
+        raise ValueError(
+            "Chua xac dinh duoc GOOGLE_SHEET_ID. "
+            "Hay khai bao GOOGLE_SHEET_ID hoac GOOGLE_SHEET_SOURCE_URL."
+        )
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SHEET_GID}"
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     text = resp.content.decode("utf-8-sig")
     reader = csv.reader(io.StringIO(text))
     return list(reader)
+
+
+def get_sheet_public_url() -> str:
+    """Tra ve link Sheet de gui cho nguoi dung."""
+    if SHEET_PUBLIC_URL:
+        return SHEET_PUBLIC_URL
+    if SHEET_ID:
+        return f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={SHEET_GID}"
+    return ""
 
 
 def _rows_to_tasks(rows: list[list[str]]) -> list[Task]:

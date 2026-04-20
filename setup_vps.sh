@@ -7,6 +7,8 @@
 
 echo "🚀 Bắt đầu cài đặt Zalo Bot..."
 
+PLAYWRIGHT_BROWSER="${PLAYWRIGHT_BROWSER:-chromium}"
+
 # Cập nhật hệ thống
 sudo apt update && sudo apt upgrade -y
 
@@ -25,8 +27,8 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 # Cài đặt trình duyệt cho Playwright (cần sudo để cài system deps)
-playwright install chromium
-sudo playwright install-deps chromium
+playwright install "$PLAYWRIGHT_BROWSER"
+sudo playwright install-deps "$PLAYWRIGHT_BROWSER"
 
 echo "✅ Cài đặt hoàn tất!"
 echo "------------------------------------------------"

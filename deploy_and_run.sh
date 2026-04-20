@@ -7,6 +7,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$PROJECT_DIR/.venv"
 DISPLAY_VALUE="${DISPLAY_VALUE:-:99}"
 HEADLESS_VALUE="${HEADLESS_VALUE:-false}"
+PLAYWRIGHT_BROWSER="${PLAYWRIGHT_BROWSER:-chromium}"
 SKIP_PIP_INSTALL="${SKIP_PIP_INSTALL:-false}"
 SKIP_PLAYWRIGHT_INSTALL="${SKIP_PLAYWRIGHT_INSTALL:-false}"
 PM2_APP_NAME="zalo-bot"
@@ -96,12 +97,13 @@ fi
 if [[ "$SKIP_PLAYWRIGHT_INSTALL" == "true" ]]; then
   log "Skipping Playwright browser install because SKIP_PLAYWRIGHT_INSTALL=true"
 else
-  log "Installing Playwright Chromium"
-  python -m playwright install chromium
+  log "Installing Playwright browser: $PLAYWRIGHT_BROWSER"
+  python -m playwright install "$PLAYWRIGHT_BROWSER"
 fi
 
 export DISPLAY="$DISPLAY_VALUE"
 export HEADLESS="$HEADLESS_VALUE"
+export PLAYWRIGHT_BROWSER="$PLAYWRIGHT_BROWSER"
 export PYTHONUNBUFFERED=1
 export APP_BUILD_ID="$BUILD_ID"
 
