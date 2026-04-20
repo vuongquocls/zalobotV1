@@ -291,7 +291,9 @@ def _format_tasks_for_context(limit: int = 12) -> str:
         due = task.due_date_raw or "chua ro ngay"
         assignee = task.assignee or "chua giao"
         status = task.status or "chua cap nhat"
-        lines.append(f"- [{due}] {task.topic} | phu trach: {assignee} | trang thai: {status}")
+        notes = task.notes or ""
+        notes_part = f" | luu y: {notes}" if notes else ""
+        lines.append(f"- [{due}] {task.topic} | phu trach: {assignee} | trang thai: {status}{notes_part}")
 
     if len(pending) > limit:
         lines.append(f"- Con {len(pending) - limit} viec chua xong khac.")

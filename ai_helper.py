@@ -256,6 +256,7 @@ if __name__ == "__main__":
         format_type="Video ngắn + Bài viết",
         assignee="TT GDMT&DV",
         status="Chưa bắt đầu",
+        notes="Chú ý quay video dọc tỷ lệ 9:16",
         link="",
         row_number=4,
     )

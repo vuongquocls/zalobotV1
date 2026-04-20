@@ -85,7 +85,8 @@ COL_CHANNEL = 4
 COL_FORMAT = 5
 COL_ASSIGNEE = 6
 COL_STATUS = 7
-COL_LINK = 8
+COL_NOTES = 8
+COL_LINK = 9
 
 
 @dataclass
@@ -99,6 +100,7 @@ class Task:
     format_type: str
     assignee: str
     status: str
+    notes: str
     link: str
     row_number: int
 
@@ -160,8 +162,8 @@ def _rows_to_tasks(rows: list[list[str]]) -> list[Task]:
     for i, row in enumerate(rows):
         if i == 0:
             continue  # skip header
-        # Pad row để đủ 9 cột
-        padded = row + [""] * (9 - len(row))
+        # Pad row để đủ 10 cột (thêm cột Lưu ý)
+        padded = row + [""] * (10 - len(row))
         due_raw = padded[COL_DATE].strip()
         tasks.append(Task(
             month=padded[COL_MONTH].strip(),
@@ -173,6 +175,7 @@ def _rows_to_tasks(rows: list[list[str]]) -> list[Task]:
             format_type=padded[COL_FORMAT].strip(),
             assignee=padded[COL_ASSIGNEE].strip(),
             status=padded[COL_STATUS].strip(),
+            notes=padded[COL_NOTES].strip(),
             link=padded[COL_LINK].strip(),
             row_number=i + 1,  # 1-based row number in the sheet
         ))
