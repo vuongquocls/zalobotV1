@@ -709,6 +709,12 @@ def _should_ignore_sidebar_chat(chat: dict) -> bool:
         return True
     if "đồng bộ tin nhắn gần đây" in raw_text or "dong bo tin nhan gan day" in raw_text:
         return True
+    if title in {"my documents", "chua co tin nhan"}:
+        return True
+    if raw_text.startswith("su dung ung dung zalo pc de tim tin nhan truoc ngay"):
+        return True
+    if title.startswith("su dung ung dung zalo pc de tim tin nhan truoc ngay"):
+        return True
     return False
 
 
