@@ -48,6 +48,34 @@ def build_today_empty_message() -> str:
     )
 
 
+def build_today_tasks_message(today_tasks: list["Task"]) -> str:
+    """Format cau tra loi khi nguoi dung hoi rieng viec hom nay."""
+    now_str = datetime.now().strftime("%d/%m/%Y")
+    if not today_tasks:
+        return (
+            f"HÔM NAY, ngày {now_str}, không có việc nào trong Google Sheet.\n"
+            f"* Link theo dõi: {_sheet_url()}"
+        )
+
+    lines = [
+        f"HÔM NAY, ngày {now_str}, có {len(today_tasks)} việc:",
+    ]
+    sorted_tasks = sorted(today_tasks, key=lambda task: task.row_number)
+
+    for index, task in enumerate(sorted_tasks, start=1):
+        if len(sorted_tasks) > 1:
+            lines.append("")
+            lines.append(f"Việc {index}:")
+
+        lines.append(f"* Chủ đề/Tiêu đề bài viết: {task.topic}")
+        lines.append(f"* Đơn vị/Cá nhân thực hiện: {task.assignee or '(chưa giao)'}")
+        lines.append(f"* Trạng thái: {task.status or '(chưa cập nhật)'}")
+        lines.append("* Lưu ý: ")
+        lines.append(f"* Link theo dõi: {_sheet_url()}")
+
+    return "\n".join(lines)
+
+
 def build_daily_reminder(
     today_tasks: list["Task"],
     overdue_tasks: list["Task"],

@@ -150,7 +150,7 @@ def get_sheet_public_url() -> str:
     if SHEET_PUBLIC_URL:
         return SHEET_PUBLIC_URL
     if SHEET_ID:
-        return f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={SHEET_GID}"
+        return f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit?gid={SHEET_GID}#gid={SHEET_GID}"
     return ""
 
 

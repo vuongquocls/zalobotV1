@@ -31,6 +31,7 @@ from message_builder import (
     build_daily_reminder,
     build_no_work_message,
     build_pending_tasks_message,
+    build_today_tasks_message,
 )
 from sheet_reader import (
     fetch_all_tasks,
@@ -1054,6 +1055,14 @@ async def _handle_natural_language(page, text: str, chat_type: str) -> None:
     try:
         intent = brain.classify_intent(text, chat_type)
         _log_event("brain.intent", chat_type=chat_type, intent=intent, text=text[:200])
+
+        if intent == "today_tasks":
+            tasks = fetch_all_tasks()
+            reply = build_today_tasks_message(get_today_tasks(tasks))
+            _log_event("sheet.today.reply", count=reply.count("* Chủ đề/Tiêu đề bài viết:"))
+            await _send_message(page, reply)
+            return
+
         context = _build_ai_context()
         reply = await brain.process_message(text, chat_type, context=context)
         if reply:
