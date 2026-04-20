@@ -334,7 +334,7 @@ async def _scan_for_red_badges(page) -> list[dict]:
                 const hits = [];
                 for (const el of document.querySelectorAll('div, span')) {
                     const rect = el.getBoundingClientRect();
-                    if (rect.left < 50 || rect.left > 360 || rect.top < 100 || rect.top > window.innerHeight - 20) continue;
+                    if (rect.left < 40 || rect.left > 760 || rect.top < 80 || rect.top > window.innerHeight - 20) continue;
                     const style = window.getComputedStyle(el);
                     const bg = style.backgroundColor || '';
                     const match = bg.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/);
@@ -346,15 +346,21 @@ async def _scan_for_red_badges(page) -> list[dict]:
                     if (!(r > 200 && g < 120 && b < 120)) continue;
 
                     let parent = el.parentElement;
-                    while (parent && parent.getBoundingClientRect().height < 40) {
+                    while (parent) {
+                        const parentRect = parent.getBoundingClientRect();
+                        if (parentRect.width > 220 && parentRect.height > 44) break;
                         parent = parent.parentElement;
                     }
                     if (!parent) continue;
 
                     const parentRect = parent.getBoundingClientRect();
+                    if (parentRect.left > 760 || parentRect.width < 220 || parentRect.height < 44) continue;
+
                     hits.push({
-                        x: parentRect.left + parentRect.width / 2,
+                        x: Math.min(parentRect.left + 120, parentRect.right - 40),
                         y: parentRect.top + parentRect.height / 2,
+                        width: parentRect.width,
+                        text: (parent.innerText || '').trim().slice(0, 120),
                     });
                 }
 
@@ -373,6 +379,66 @@ async def _scan_for_red_badges(page) -> list[dict]:
         )
     except Exception as exc:
         _log_event("badge_scan.error", error=_serialize_error(exc))
+        return []
+
+
+async def _scan_for_unread_chat_rows(page) -> list[dict]:
+    try:
+        return await page.evaluate(
+            """
+            () => {
+                const rows = [];
+                const allNodes = [...document.querySelectorAll('div, li, a, button')];
+
+                const hasUnreadBadge = (node) => {
+                    for (const child of node.querySelectorAll('*')) {
+                        const rect = child.getBoundingClientRect();
+                        if (rect.width < 10 || rect.height < 10) continue;
+                        const style = window.getComputedStyle(child);
+                        const bg = style.backgroundColor || '';
+                        const match = bg.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/);
+                        if (!match) continue;
+
+                        const r = Number(match[1]);
+                        const g = Number(match[2]);
+                        const b = Number(match[3]);
+                        if (r > 200 && g < 120 && b < 120) return true;
+                    }
+                    return false;
+                };
+
+                for (const node of allNodes) {
+                    const rect = node.getBoundingClientRect();
+                    if (rect.left < 100 || rect.left > 760) continue;
+                    if (rect.top < 120 || rect.top > window.innerHeight - 40) continue;
+                    if (rect.width < 220 || rect.height < 44 || rect.height > 140) continue;
+
+                    const text = (node.innerText || '').trim();
+                    if (!text || text.length > 300) continue;
+                    if (!hasUnreadBadge(node)) continue;
+
+                    rows.push({
+                        x: Math.min(rect.left + 120, rect.right - 40),
+                        y: rect.top + rect.height / 2,
+                        text: text.slice(0, 120),
+                    });
+                }
+
+                const unique = [];
+                const seen = new Set();
+                for (const row of rows) {
+                    const key = `${Math.round(row.y / 10)}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        unique.push(row);
+                    }
+                }
+                return unique;
+            }
+            """
+        )
+    except Exception as exc:
+        _log_event("unread_row_scan.error", error=_serialize_error(exc))
         return []
 
 
@@ -622,7 +688,15 @@ async def main() -> None:
                 await _maybe_send_scheduled_reminder(page)
 
                 badges = await _scan_for_red_badges(page)
-                targets = badges if badges else [{"x": 640, "y": 320, "is_active": True}]
+                unread_rows = await _scan_for_unread_chat_rows(page)
+                targets = badges or unread_rows or [{"x": 640, "y": 320, "is_active": True}]
+                if badges or unread_rows:
+                    _log_event(
+                        "unread.detected",
+                        badge_count=len(badges),
+                        row_count=len(unread_rows),
+                        sample=(badges or unread_rows)[0].get("text", ""),
+                    )
 
                 for target in targets:
                     if "is_active" not in target:
@@ -633,8 +707,17 @@ async def main() -> None:
                     chat_name = state.get("chatName") or "Unknown"
                     chat_type = state.get("chatType") or "unknown"
                     incoming_messages = state.get("incomingMessages") or []
+                    has_composer = bool(state.get("hasComposer"))
 
-                    if not incoming_messages:
+                    _log_event(
+                        "chat.inspect",
+                        chat=chat_name,
+                        chat_type=chat_type,
+                        incoming_count=len(incoming_messages),
+                        has_composer=has_composer,
+                    )
+
+                    if not has_composer or not incoming_messages:
                         continue
 
                     latest_message = incoming_messages[-1]
