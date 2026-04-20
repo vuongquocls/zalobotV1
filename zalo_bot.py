@@ -152,8 +152,13 @@ def _strip_accents(value: str) -> str:
 
 def _simplify_text(value: str) -> str:
     raw = _strip_accents(value or "").lower()
+    raw = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", raw)
     raw = re.sub(r"\s+", " ", raw).strip()
     return raw
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9@]+", "", _simplify_text(value))
 
 
 def _build_bot_aliases() -> list[str]:
@@ -174,11 +179,24 @@ def _build_bot_aliases() -> list[str]:
 BOT_ALIASES = _build_bot_aliases()
 
 
-def _is_bot_mentioned(text: str) -> bool:
+def _find_bot_mention_alias(text: str) -> str:
     normalized = _simplify_text(text).replace("@ ", "@")
     if not normalized:
-        return False
-    return any(alias in normalized for alias in BOT_ALIASES)
+        return ""
+    compact = _compact_text(normalized)
+    for alias in BOT_ALIASES:
+        alias_normalized = _simplify_text(alias).replace("@ ", "@")
+        if alias_normalized and alias_normalized in normalized:
+            return alias
+
+        alias_compact = _compact_text(alias_normalized)
+        if alias_compact and alias_compact in compact:
+            return alias
+    return ""
+
+
+def _is_bot_mentioned(text: str) -> bool:
+    return bool(_find_bot_mention_alias(text))
 
 
 def _should_reply(chat_type: str, text: str) -> bool:
@@ -188,10 +206,17 @@ def _should_reply(chat_type: str, text: str) -> bool:
         return True
     if chat_type == "personal":
         return True
-    mentioned = _is_bot_mentioned(text)
-    if chat_type == "group" and not mentioned:
-        _log_event("group.ignored", reason="no_bot_mention", text=(text or "")[:200])
-    return mentioned
+    matched_alias = _find_bot_mention_alias(text)
+    if chat_type == "group" and matched_alias:
+        _log_event("group.mention.matched", alias=matched_alias, text=(text or "")[:200])
+    elif chat_type == "group":
+        _log_event(
+            "group.ignored",
+            reason="no_bot_mention",
+            aliases=BOT_ALIASES[:8],
+            text=(text or "")[:200],
+        )
+    return bool(matched_alias)
 
 
 def _build_help_message() -> str:

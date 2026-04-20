@@ -1,7 +1,7 @@
 """
 ai_helper.py — AI hỗ trợ viết bài truyền thông.
 
-Hỗ trợ nhiều LLM miễn phí: OpenRouter → Groq → Gemini (fallback).
+Hỗ trợ nhiều LLM miễn phí: OpenRouter → Groq → Gemini → Ollama (fallback).
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ PROVIDERS = []
 _or_key = os.getenv("OPENROUTER_API_KEY", "")
 if _or_key:
     PROVIDERS.append({
+        "type": "openai",
         "name": "OpenRouter",
         "api_key": _or_key,
         "base_url": "https://openrouter.ai/api/v1",
@@ -38,6 +39,7 @@ if _or_key:
 _groq_key = os.getenv("GROQ_API_KEY", "")
 if _groq_key:
     PROVIDERS.append({
+        "type": "openai",
         "name": "Groq",
         "api_key": _groq_key,
         "base_url": "https://api.groq.com/openai/v1",
@@ -48,10 +50,22 @@ if _groq_key:
 _gemini_key = os.getenv("GEMINI_API_KEY", "")
 if _gemini_key:
     PROVIDERS.append({
+        "type": "openai",
         "name": "Gemini",
         "api_key": _gemini_key,
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+    })
+
+# 4. Ollama local/cloud models (không cần API key ở code bot)
+_ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+_ollama_models_raw = os.getenv("OLLAMA_MODELS", "kimi-k2.5:cloud,gemma4:31b-cloud")
+for _ollama_model in [model.strip() for model in _ollama_models_raw.split(",") if model.strip()]:
+    PROVIDERS.append({
+        "type": "ollama",
+        "name": "Ollama",
+        "base_url": _ollama_base_url,
+        "model": _ollama_model,
     })
 
 
@@ -88,29 +102,16 @@ async def _call_llm(
 ) -> str:
     """Gọi LLM với fallback qua nhiều provider."""
     if not PROVIDERS:
-        print("   ⚠️ Chua cau hinh API key cho bat ky LLM nao.")
+        print("   ⚠️ Chưa cấu hình LLM provider nào.")
         return fallback_message
-
-    from openai import AsyncOpenAI
 
     last_error = ""
     for provider in PROVIDERS:
         try:
-            client = AsyncOpenAI(
-                api_key=provider["api_key"],
-                base_url=provider["base_url"],
-            )
-            response = await client.chat.completions.create(
-                model=provider["model"],
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                max_tokens=max_tokens,
-                temperature=0.7,
-            )
-            content = response.choices[0].message.content or ""
-            result = content.strip()
+            if provider["type"] == "ollama":
+                result = await _call_ollama(provider, system, user, max_tokens)
+            else:
+                result = await _call_openai_compatible(provider, system, user, max_tokens)
             if result:
                 print(f"   ✅ AI: dùng {provider['name']} ({provider['model']})")
                 return result
@@ -119,8 +120,56 @@ async def _call_llm(
             print(f"   ⚠️ {last_error}")
             continue
 
-    print(f"   ❌ Tat ca LLM deu loi. Loi cuoi: {last_error}")
+    print(f"   ❌ Tất cả LLM đều lỗi. Lỗi cuối: {last_error}")
     return fallback_message
+
+
+async def _call_openai_compatible(provider: dict, system: str, user: str, max_tokens: int) -> str:
+    """Gọi các provider có API tương thích OpenAI."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(
+        api_key=provider["api_key"],
+        base_url=provider["base_url"],
+    )
+    response = await client.chat.completions.create(
+        model=provider["model"],
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        max_tokens=max_tokens,
+        temperature=0.7,
+    )
+    content = response.choices[0].message.content or ""
+    return content.strip()
+
+
+async def _call_ollama(provider: dict, system: str, user: str, max_tokens: int) -> str:
+    """Gọi Ollama qua REST API để có thể fallback khi cloud API hết quota."""
+    import httpx
+
+    payload = {
+        "model": provider["model"],
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.7,
+            "num_predict": max_tokens,
+        },
+    }
+    timeout = httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(f"{provider['base_url']}/api/chat", json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+    message = data.get("message") or {}
+    content = message.get("content") or data.get("response") or ""
+    return str(content).strip()
 
 
 async def draft_article(task: "Task", extra_request: str = "") -> str:
