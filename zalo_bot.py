@@ -62,6 +62,8 @@ BOT_NAME_RAW = os.getenv("BOT_NAME", "Nhan Vien Moi Yok Don")
 BOT_NAMES = [name.strip().lower() for name in BOT_NAME_RAW.split(",") if name.strip()]
 if not BOT_NAMES:
     BOT_NAMES = ["nhan vien moi yok don"]
+BOT_NAME_ALIASES_RAW = os.getenv("BOT_NAME_ALIASES", "bot ai")
+BOT_NAME_ALIASES = [name.strip().lower() for name in BOT_NAME_ALIASES_RAW.split(",") if name.strip()]
 
 ONBOARDING_PATTERNS = (
     "chào mừng đến với zalo pc",
@@ -156,7 +158,7 @@ def _simplify_text(value: str) -> str:
 
 def _build_bot_aliases() -> list[str]:
     aliases: set[str] = set()
-    for name in BOT_NAMES:
+    for name in [*BOT_NAMES, *BOT_NAME_ALIASES]:
         simplified = _simplify_text(name)
         if not simplified:
             continue
@@ -186,7 +188,10 @@ def _should_reply(chat_type: str, text: str) -> bool:
         return True
     if chat_type == "personal":
         return True
-    return _is_bot_mentioned(text)
+    mentioned = _is_bot_mentioned(text)
+    if chat_type == "group" and not mentioned:
+        _log_event("group.ignored", reason="no_bot_mention", text=(text or "")[:200])
+    return mentioned
 
 
 def _build_help_message() -> str:
