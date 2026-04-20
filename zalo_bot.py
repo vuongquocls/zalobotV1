@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -82,6 +83,12 @@ SEARCH_INPUT_SELECTORS = [
 CHAT_INPUT_SELECTORS = [
     "#richInput",
     "#chatInput",
+    "[placeholder*='Nhập @']",
+    "[placeholder*='tin nhắn tới']",
+    "[placeholder*='tin nhan toi']",
+    "[aria-label*='Nhập']",
+    "[aria-label*='tin nhắn tới']",
+    "[role='textbox']",
     "footer [contenteditable='true']",
     "div[contenteditable='true']",
 ]
@@ -135,11 +142,22 @@ def _extract_command(text: str) -> tuple[str, str] | None:
     return command, payload
 
 
+def _strip_accents(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value or "")
+    return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+
+
+def _simplify_text(value: str) -> str:
+    raw = _strip_accents(value or "").lower()
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw
+
+
 def _is_bot_mentioned(text: str) -> bool:
-    normalized = (text or "").strip().lower()
+    normalized = _simplify_text(text)
     if not normalized:
         return False
-    return any(name in normalized for name in BOT_NAMES)
+    return any(_simplify_text(name) in normalized for name in BOT_NAMES)
 
 
 def _should_reply(chat_type: str, text: str) -> bool:
@@ -171,7 +189,7 @@ def _build_help_message() -> str:
 
 
 def _normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", (value or "").strip()).lower()
+    return _simplify_text(value)
 
 
 def _looks_like_onboarding_text(value: str) -> bool:
@@ -280,14 +298,19 @@ async def _send_message(page, text: str) -> bool:
             raise RuntimeError("Khong tim thay o nhap tin nhan.")
 
         modifier = _platform_modifier()
-        await page.keyboard.press(f"{modifier}+A")
-        await page.keyboard.press("Delete")
-        await page.wait_for_timeout(200)
+        tag_name = (await input_box.evaluate("(node) => node.tagName || ''")).upper()
+        if tag_name in {"INPUT", "TEXTAREA"}:
+            await input_box.fill("")
+            await input_box.fill(text)
+        else:
+            await page.keyboard.press(f"{modifier}+A")
+            await page.keyboard.press("Delete")
+            await page.wait_for_timeout(200)
 
-        await page.evaluate(
+            inserted = await page.evaluate(
             """
             (messageText) => {
-                const input = ['#richInput', '#chatInput', 'footer [contenteditable="true"]', 'div[contenteditable="true"]']
+                const input = ['#richInput', '#chatInput', '[placeholder*="Nhập @"]', '[placeholder*="tin nhắn tới"]', '[placeholder*="tin nhan toi"]', '[role="textbox"]', 'footer [contenteditable="true"]', 'div[contenteditable="true"]']
                     .map((selector) => document.querySelector(selector))
                     .find(Boolean);
 
@@ -309,7 +332,9 @@ async def _send_message(page, text: str) -> bool:
             }
             """,
             text,
-        )
+            )
+            if not inserted:
+                await input_box.fill(text)
         await page.wait_for_timeout(300)
         await page.keyboard.press("Enter")
         _log_event("reply.success", preview=text[:80])
@@ -326,6 +351,10 @@ async def _capture_chat_state(page) -> dict:
             () => {
                 const header = document.querySelector('header') || document.querySelector('[class*="header"]');
                 const headerText = header ? header.innerText || '' : '';
+                const headerLines = headerText
+                    .split('\\n')
+                    .map((line) => line.trim())
+                    .filter(Boolean);
 
                 const pageText = document.body.innerText || '';
                 const onboardingPatterns = [
@@ -338,12 +367,20 @@ async def _capture_chat_state(page) -> dict:
                 ];
                 const isOnboarding = onboardingPatterns.some((pattern) => pageText.includes(pattern));
 
-                const composer = ['#richInput', '#chatInput', 'footer [contenteditable="true"]', 'div[contenteditable="true"]']
-                    .map((selector) => document.querySelector(selector))
+                const isVisible = (node) => {
+                    if (!node) return false;
+                    const style = window.getComputedStyle(node);
+                    if (style.display === 'none' || style.visibility === 'hidden') return false;
+                    const rect = node.getBoundingClientRect();
+                    return rect.width > 40 && rect.height > 10;
+                };
+
+                const composer = ['#richInput', '#chatInput', '[placeholder*="Nhập @"]', '[placeholder*="tin nhắn tới"]', '[placeholder*="tin nhan toi"]', '[role="textbox"]', 'footer [contenteditable="true"]', 'div[contenteditable="true"]']
+                    .flatMap((selector) => [...document.querySelectorAll(selector)])
                     .find((node) => {
-                        if (!node || node.offsetParent === null) return false;
+                        if (!isVisible(node)) return false;
                         const rect = node.getBoundingClientRect();
-                        return rect.left > 450 && rect.top > (window.innerHeight - 240);
+                        return rect.top > (window.innerHeight - 120) && rect.right > (window.innerWidth * 0.55);
                     });
 
                 const root = document.querySelector('#chat-root') || document.body;
@@ -352,13 +389,25 @@ async def _capture_chat_state(page) -> dict:
                 const mainLeft = sidebarRight;
                 const centerX = mainLeft + (window.innerWidth - mainLeft) / 2;
                 const composerTop = composer ? composer.getBoundingClientRect().top : window.innerHeight - 100;
+                const normalizedHeader = headerText.toLowerCase();
 
                 let chatType = 'unknown';
-                if (headerText.includes('thành viên') || headerText.includes('thanh vien') || headerText.includes('members')) {
+                if (normalizedHeader.includes('thành viên') || normalizedHeader.includes('thanh vien') || normalizedHeader.includes('members')) {
                     chatType = 'group';
                 } else if (composer && !isOnboarding) {
                     chatType = 'personal';
                 }
+
+                const isUtilityLine = (value) => {
+                    const text = (value || '').trim();
+                    if (!text) return true;
+                    if (/^\\d{1,3}$/.test(text)) return true;
+                    if (/^\\d{1,2}:\\d{2}$/.test(text)) return true;
+                    if (/\\d+\\s+(thành viên|thanh vien|members)$/i.test(text)) return true;
+                    return false;
+                };
+
+                const chatName = headerLines.find((line) => !isUtilityLine(line)) || '';
 
                 const nodes = [...document.querySelectorAll('div, span')]
                     .filter((el) => {
@@ -392,7 +441,7 @@ async def _capture_chat_state(page) -> dict:
                 }
 
                 return {
-                    chatName: (headerText.split('\\n')[0] || '').trim(),
+                    chatName,
                     chatType,
                     isOnboarding,
                     incomingMessages: unique.filter((item) => !item.isMe).map((item) => item.text).slice(-10),
@@ -893,7 +942,7 @@ async def _handle_command(page, command: str, payload: str, chat_name: str) -> N
         await _send_message(page, "Lenh chua duoc ho tro. Anh/Chị go /help de xem danh sach lenh.")
     except Exception as exc:
         _log_event("command.error", command=command, error=_serialize_error(exc))
-        await _send_message(page, f"Em gap loi khi xu ly lenh /{command}: {exc}")
+        await _send_message(page, f"Em gap loi khi xu ly lenh /{command}. Anh/Chị thu lai giup em nhe.")
 
 
 async def _handle_natural_language(page, text: str, chat_type: str) -> None:
@@ -904,7 +953,7 @@ async def _handle_natural_language(page, text: str, chat_type: str) -> None:
             await _send_message(page, reply)
     except Exception as exc:
         _log_event("ai.error", error=_serialize_error(exc))
-        await _send_message(page, f"Em dang gap loi AI: {exc}")
+        await _send_message(page, "Em dang gap loi AI tam thoi. Anh/Chị thu nhan lai sau it phut giup em nhe.")
 
 
 async def _process_chat_message(page, chat_name: str, chat_type: str, text: str) -> None:

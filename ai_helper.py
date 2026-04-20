@@ -13,6 +13,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+DEFAULT_AI_FALLBACK = (
+    "Em đang bận xu ly AI nen chua tra loi duoc ngay. "
+    "Anh/Chị thu nhan lai sau it phut giup em nhe."
+)
+
 if TYPE_CHECKING:
     from sheet_reader import Task
 
@@ -75,10 +80,16 @@ def _build_article_prompt(task: "Task", extra_request: str = "") -> str:
     return "\n".join(lines)
 
 
-async def _call_llm(system: str, user: str, max_tokens: int = 1500) -> str:
+async def _call_llm(
+    system: str,
+    user: str,
+    max_tokens: int = 1500,
+    fallback_message: str = DEFAULT_AI_FALLBACK,
+) -> str:
     """Gọi LLM với fallback qua nhiều provider."""
     if not PROVIDERS:
-        return "Chưa cấu hình API key cho bất kỳ LLM nào (OPENROUTER_API_KEY, GROQ_API_KEY, GEMINI_API_KEY)."
+        print("   ⚠️ Chua cau hinh API key cho bat ky LLM nao.")
+        return fallback_message
 
     from openai import AsyncOpenAI
 
@@ -108,14 +119,22 @@ async def _call_llm(system: str, user: str, max_tokens: int = 1500) -> str:
             print(f"   ⚠️ {last_error}")
             continue
 
-    return f"Tất cả LLM đều lỗi. Lỗi cuối: {last_error}"
+    print(f"   ❌ Tat ca LLM deu loi. Loi cuoi: {last_error}")
+    return fallback_message
 
 
 async def draft_article(task: "Task", extra_request: str = "") -> str:
     """Gợi ý nội dung bài viết dựa trên thông tin task từ Google Sheet."""
     prompt = _build_article_prompt(task, extra_request)
     system = "Bạn là trợ lý truyền thông VQG Yok Đôn, chuyên soạn bài viết và gợi ý nội dung."
-    return await _call_llm(system, prompt)
+    return await _call_llm(
+        system,
+        prompt,
+        fallback_message=(
+            "Em tam thoi chua soan duoc bai viet vi dich vu AI dang ban. "
+            "Anh/Chị thu lai sau it phut giup em nhe."
+        ),
+    )
 
 
 async def draft_content_from_request(request_text: str, context: str = "") -> str:
@@ -128,7 +147,15 @@ async def draft_content_from_request(request_text: str, context: str = "") -> st
     user = f"Hay du thao noi dung truyen thong theo yeu cau sau:\n{request_text.strip()}"
     if context:
         user += f"\n\nNgu canh bo sung:\n{context}"
-    return await _call_llm(system, user, max_tokens=1500)
+    return await _call_llm(
+        system,
+        user,
+        max_tokens=1500,
+        fallback_message=(
+            "Em tam thoi chua du thao duoc noi dung vi dich vu AI dang ban. "
+            "Anh/Chị thu lai sau it phut giup em nhe."
+        ),
+    )
 
 
 async def answer_question(question: str, context: str = "") -> str:
