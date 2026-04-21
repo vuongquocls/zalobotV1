@@ -7,6 +7,17 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
     def test_group_replies_when_alias_is_visible(self):
         self.assertTrue(zalo_bot._should_reply("group", "@Nhân Viên Mới Yok Đôn em có thể làm gì?"))
 
+    def test_lapkehoach_command_is_supported(self):
+        self.assertEqual(zalo_bot._extract_command("/lapkehoach"), ("lapkehoach", ""))
+        self.assertTrue(zalo_bot._should_reply("group", "/lapkehoach"))
+
+    def test_lapkehoach_message_uses_sheet_link(self):
+        reply = zalo_bot._build_plan_request_message()
+
+        self.assertIn("Các anh ơi, hãy lên kế hoạch các bài viết tiếp theo vào link:", reply)
+        self.assertIn("https://docs.google.com/spreadsheets/d/1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8", reply)
+        self.assertIn("giúp em đi. Chỉ một chút thôi mà.", reply)
+
     def test_group_replies_to_direct_bot_question_when_zalo_strips_mention(self):
         self.assertTrue(zalo_bot._should_reply("group", "em có thể làm gì?"))
         self.assertTrue(zalo_bot._should_reply("group", "nhiệm vụ của em là gì?"))

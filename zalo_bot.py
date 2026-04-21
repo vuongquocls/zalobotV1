@@ -98,7 +98,7 @@ CHAT_INPUT_SELECTORS = [
     "div[contenteditable='true']",
 ]
 LOGIN_READY_SELECTORS = SEARCH_INPUT_SELECTORS + ["div[data-id]"]
-COMMAND_RE = re.compile(r"/(nhacviec|xemviec|hotrobai|help|hoc|ghinho)\b(.*)", re.IGNORECASE | re.DOTALL)
+COMMAND_RE = re.compile(r"/(nhacviec|xemviec|hotrobai|lapkehoach|help|hoc|ghinho)\b(.*)", re.IGNORECASE | re.DOTALL)
 
 
 def _log_event(event: str, **kwargs) -> None:
@@ -266,12 +266,21 @@ def _build_help_message() -> str:
             "",
             "/nhacviec - Doc Sheet va gui ban nhac viec hien tai.",
             "/xemviec - Liet ke cac viec chua xong.",
+            "/lapkehoach - Nhac moi nguoi cap nhat ke hoach bai viet tiep theo.",
             "/hotrobai <yeu cau> - Du thao noi dung truyen thong.",
             "/hoc <dieu can nho> - Day bot mot ghi nho moi.",
             "/help - Xem lai huong dan.",
             "",
             f"Sheet hien tai: {sheet_url}",
         ]
+    )
+
+
+def _build_plan_request_message() -> str:
+    sheet_url = get_sheet_public_url() or "(chua cau hinh Sheet)"
+    return (
+        "Các anh ơi, hãy lên kế hoạch các bài viết tiếp theo vào link: "
+        f"{sheet_url} giúp em đi. Chỉ một chút thôi mà."
     )
 
 
@@ -1075,6 +1084,10 @@ async def _handle_command(page, command: str, payload: str, chat_name: str) -> N
         if command == "xemviec":
             tasks = fetch_all_tasks()
             await _send_message(page, build_pending_tasks_message(tasks))
+            return
+
+        if command == "lapkehoach":
+            await _send_message(page, _build_plan_request_message())
             return
 
         if command == "hotrobai":
