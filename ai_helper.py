@@ -20,6 +20,7 @@ DEFAULT_AI_FALLBACK = (
 )
 
 FACEBOOK_STYLE_OPTIONS = ("vui vẻ", "cảm xúc mạnh", "nghiêm túc", "khoa học")
+DEFAULT_FACEBOOK_STYLE = "Yok Đôn mộc mạc, cảm xúc, gần gũi; tự chia thành 3 phương án khác nhau"
 FACEBOOK_STYLE_PATTERNS = {
     "vui vẻ": ("vui vẻ", "vui ve", "tươi vui", "tuoi vui", "nhẹ nhàng", "nhe nhang"),
     "cảm xúc mạnh": ("cảm xúc", "cam xuc", "cảm xúc mạnh", "cam xuc manh", "xúc động", "xuc dong"),
@@ -184,6 +185,11 @@ def build_facebook_style_question(request_text: str) -> str:
         lines.append(f"Chủ đề em đã nhận: {topic}")
     lines.append(f"Anh có thể nhắn lại theo mẫu: {example}")
     return "\n".join(lines)
+
+
+def resolve_facebook_style(request_text: str) -> str:
+    """Dung style nguoi dung neu co; neu khong thi van viet ngay theo gu Yok Don."""
+    return detect_facebook_style(request_text) or DEFAULT_FACEBOOK_STYLE
 
 
 def _build_facebook_options_prompt(request_text: str, style: str, context: str = "") -> str:

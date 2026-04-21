@@ -26,9 +26,8 @@ from playwright.async_api import async_playwright
 
 import brain
 from ai_helper import (
-    build_facebook_style_question,
-    detect_facebook_style,
     draft_facebook_post_options,
+    resolve_facebook_style,
 )
 from knowledge_store import add_learning, get_learning_context
 from message_builder import (
@@ -562,10 +561,11 @@ async def _capture_chat_state(page) -> dict:
                         const rect = el.getBoundingClientRect();
                         if (rect.left < mainLeft + 12 || rect.right > window.innerWidth - 12) return false;
                         if (rect.width < 40 || rect.height < 14) return false;
-                        if (rect.width > (window.innerWidth - mainLeft) * 0.78) return false;
-                        if (rect.top < 90 || rect.bottom > composerTop - 10) return false;
                         const text = (el.innerText || '').trim();
-                        return text && text.length < 800;
+                        const looksLikeCommand = /^\\/(nhacviec|xemviec|hotrobai|lapkehoach|help|hoc|ghinho)\\b/i.test(text);
+                        if (!looksLikeCommand && rect.width > (window.innerWidth - mainLeft) * 0.78) return false;
+                        if (rect.top < 90 || rect.bottom > composerTop - 10) return false;
+                        return text && text.length < 3000;
                     })
                     .map((el) => {
                         const rect = el.getBoundingClientRect();
@@ -1099,13 +1099,16 @@ async def _handle_command(page, command: str, payload: str, chat_name: str) -> N
                 await _send_message(page, "Cu phap: /hotrobai <yeu cau can du thao>")
                 return
 
-            style = detect_facebook_style(payload)
-            if not style:
-                await _send_message(page, build_facebook_style_question(payload))
-                return
-
+            style = resolve_facebook_style(payload)
             context = _build_ai_context()
+            _log_event(
+                "command.hotrobai.llm_call",
+                style=style,
+                payload_len=len(payload),
+                payload=payload[:200],
+            )
             draft = await draft_facebook_post_options(payload, style=style, context=context)
+            _log_event("command.hotrobai.llm_reply", reply_len=len(draft), preview=draft[:160])
             await _send_message(page, draft)
             return
 
