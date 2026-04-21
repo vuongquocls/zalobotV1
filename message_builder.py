@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sheet_reader import get_sheet_public_url
+from time_utils import local_now
 
 if TYPE_CHECKING:
     from sheet_reader import Task
@@ -38,7 +39,7 @@ def _task_line(task: "Task", show_status: bool = True) -> str:
 
 def build_today_empty_message() -> str:
     """Tin nhắn khi hôm nay không có nội dung nào trong Sheet."""
-    now_str = datetime.now().strftime("%d/%m/%Y")
+    now_str = local_now().strftime("%d/%m/%Y")
     return (
         f"NHẮC VIỆC TRUYỀN THÔNG - {now_str}\n"
         f"{'=' * 36}\n\n"
@@ -50,7 +51,7 @@ def build_today_empty_message() -> str:
 
 def build_today_tasks_message(today_tasks: list["Task"]) -> str:
     """Format cau tra loi khi nguoi dung hoi rieng viec hom nay."""
-    now_str = datetime.now().strftime("%d/%m/%Y")
+    now_str = local_now().strftime("%d/%m/%Y")
     if not today_tasks:
         return (
             f"HÔM NAY, ngày {now_str}, không có việc nào trong Google Sheet.\n"
@@ -78,7 +79,7 @@ def build_today_tasks_message(today_tasks: list["Task"]) -> str:
 
 def build_upcoming_tasks_message(upcoming_tasks: list["Task"], days_ahead: int = 3) -> str:
     """Format cau tra loi khi nguoi dung hoi viec sap toi."""
-    now = datetime.now()
+    now = local_now()
     start_str = now.strftime("%d/%m/%Y")
     end_str = datetime.fromordinal(now.date().toordinal() + days_ahead).strftime("%d/%m/%Y")
     if not upcoming_tasks:
@@ -117,7 +118,7 @@ def build_daily_reminder(
     """Xây dựng tin nhắn nhắc việc hàng ngày. Trả None nếu không có gì cần nhắc."""
 
     sections: list[str] = []
-    now_str = datetime.now().strftime("%d/%m/%Y")
+    now_str = local_now().strftime("%d/%m/%Y")
 
     # Header
     sections.append(f"NHẮC VIỆC TRUYỀN THÔNG - {now_str}")
@@ -178,7 +179,7 @@ def build_daily_reminder(
 
 def build_no_work_message() -> str:
     """Tin nhắn khi Sheet trống hoặc không có task nào cần nhắc."""
-    now_str = datetime.now().strftime("%d/%m/%Y")
+    now_str = local_now().strftime("%d/%m/%Y")
     return (
         f"NHẮC VIỆC TRUYỀN THÔNG - {now_str}\n"
         f"{'=' * 36}\n\n"
@@ -190,7 +191,7 @@ def build_no_work_message() -> str:
 
 def build_sheet_empty_message() -> str:
     """Tin nhắn khi Sheet chưa có dữ liệu cho kỳ này."""
-    now_str = datetime.now().strftime("%d/%m/%Y")
+    now_str = local_now().strftime("%d/%m/%Y")
     return (
         f"NHẮC VIỆC TRUYỀN THÔNG - {now_str}\n"
         f"{'=' * 36}\n\n"
@@ -222,7 +223,7 @@ def build_task_detail(task: "Task") -> str:
 
 def build_pending_tasks_message(tasks: list["Task"]) -> str:
     """Danh sach cac viec chua xong de tra loi lenh /xemviec."""
-    now_str = datetime.now().strftime("%d/%m/%Y")
+    now_str = local_now().strftime("%d/%m/%Y")
     pending_tasks = [task for task in tasks if not task.is_completed]
     if not pending_tasks:
         return (

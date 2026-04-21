@@ -17,6 +17,8 @@ module.exports = {
       out_file: `${__dirname}/runtime-logs/zalo-bot-out.log`,
       error_file: `${__dirname}/runtime-logs/zalo-bot-error.log`,
       env: {
+        TZ: "Asia/Ho_Chi_Minh",
+        BOT_TIMEZONE: "Asia/Ho_Chi_Minh",
         DISPLAY: ":99",
         HEADLESS: "false",
         PYTHONUNBUFFERED: "1",

@@ -43,6 +43,7 @@ from sheet_reader import (
     get_upcoming_tasks,
     is_today_empty,
 )
+from time_utils import LOCAL_TIMEZONE_NAME, local_now, local_today_key
 
 load_dotenv()
 
@@ -102,7 +103,7 @@ COMMAND_RE = re.compile(r"/(nhacviec|xemviec|hotrobai|help|hoc|ghinho)\b(.*)", r
 
 def _log_event(event: str, **kwargs) -> None:
     entry = {
-        "ts": datetime.now().isoformat(timespec="seconds"),
+        "ts": local_now().isoformat(timespec="seconds"),
         "event": event,
         **kwargs,
     }
@@ -130,7 +131,11 @@ def _save_runtime_state(state: dict) -> None:
 
 
 def _today_key() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return local_today_key()
+
+
+def _is_at_or_after_reminder_time(now: datetime) -> bool:
+    return (now.hour, now.minute) >= (REMINDER_HOUR, REMINDER_MINUTE)
 
 
 def _platform_modifier() -> str:
@@ -1022,15 +1027,20 @@ async def _send_group_reminder(page) -> bool:
 
 
 async def _maybe_send_scheduled_reminder(page) -> None:
-    now = datetime.now()
+    now = local_now()
     state = _load_runtime_state()
     already_sent_today = state.get("last_daily_reminder_date") == _today_key()
 
-    should_send_now = (now.hour, now.minute) >= (REMINDER_HOUR, REMINDER_MINUTE)
+    should_send_now = _is_at_or_after_reminder_time(now)
     if already_sent_today or not should_send_now:
         return
 
-    _log_event("reminder.triggered", scheduled_for=f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}")
+    _log_event(
+        "reminder.triggered",
+        scheduled_for=f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}",
+        timezone=LOCAL_TIMEZONE_NAME,
+        local_time=now.isoformat(timespec="seconds"),
+    )
     if await _send_group_reminder(page):
         state["last_daily_reminder_date"] = _today_key()
         state["last_daily_reminder_sent_at"] = now.isoformat(timespec="seconds")
@@ -1200,6 +1210,7 @@ async def main() -> None:
         group=ZALO_GROUP_NAME,
         reminder_time=f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}",
         days_ahead=DAYS_AHEAD,
+        timezone=LOCAL_TIMEZONE_NAME,
     )
 
     async with async_playwright() as playwright:

@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from dotenv import load_dotenv
+from time_utils import local_now, local_today
 
 load_dotenv()
 
@@ -192,7 +193,7 @@ def get_today_tasks(tasks: list[Task] | None = None) -> list[Task]:
     """Lấy các task có ngày đăng dự kiến là hôm nay."""
     if tasks is None:
         tasks = fetch_all_tasks()
-    today = datetime.now().date()
+    today = local_today()
     return [t for t in tasks if t.due_date and t.due_date.date() == today]
 
 
@@ -200,7 +201,7 @@ def get_upcoming_tasks(days_ahead: int = 3, tasks: list[Task] | None = None) -> 
     """Lấy các task trong N ngày tới (không tính quá hạn, không tính đã xong)."""
     if tasks is None:
         tasks = fetch_all_tasks()
-    today = datetime.now().date()
+    today = local_today()
     deadline = today + timedelta(days=days_ahead)
     results = []
     for t in tasks:
@@ -215,7 +216,7 @@ def get_overdue_tasks(tasks: list[Task] | None = None) -> list[Task]:
     """Lấy các task quá hạn chưa hoàn thành."""
     if tasks is None:
         tasks = fetch_all_tasks()
-    today = datetime.now().date()
+    today = local_today()
     return [
         t for t in tasks
         if t.due_date and t.due_date.date() < today and not t.is_completed
@@ -236,7 +237,7 @@ def is_today_empty(tasks: list[Task] | None = None) -> bool:
     """
     if tasks is None:
         tasks = fetch_all_tasks()
-    today = datetime.now().date()
+    today = local_today()
     for t in tasks:
         if t.due_date and t.due_date.date() == today:
             return False
@@ -255,7 +256,7 @@ if __name__ == "__main__":
     print(f"✅ Tổng cộng {len(all_tasks)} task.\n")
 
     today = get_today_tasks(all_tasks)
-    print(f"📅 Hôm nay ({datetime.now().strftime('%d/%m/%Y')}): {len(today)} task")
+    print(f"📅 Hôm nay ({local_now().strftime('%d/%m/%Y')}): {len(today)} task")
     for t in today:
         print(f"   - [{t.status}] {t.topic} → {t.assignee or '(chưa giao)'}")
 

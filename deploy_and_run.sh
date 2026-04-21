@@ -106,6 +106,8 @@ export HEADLESS="$HEADLESS_VALUE"
 export PLAYWRIGHT_BROWSER="$PLAYWRIGHT_BROWSER"
 export PYTHONUNBUFFERED=1
 export APP_BUILD_ID="$BUILD_ID"
+export TZ="${TZ:-Asia/Ho_Chi_Minh}"
+export BOT_TIMEZONE="${BOT_TIMEZONE:-Asia/Ho_Chi_Minh}"
 
 ensure_display_stack
 
