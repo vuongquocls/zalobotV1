@@ -38,6 +38,8 @@ class HotroBaiWorkflowTests(unittest.TestCase):
         self.assertIn("Mộc mạc, tự nhiên, gần gũi", prompt)
         self.assertIn("Không ai báo tin, nhưng rừng biết.", prompt)
         self.assertIn("Tạo đúng 3 phương án", prompt)
+        self.assertIn("không phải một câu trả lời chatbot chung chung", prompt)
+        self.assertIn("Tránh văn mẫu sáo rỗng", prompt)
         self.assertIn("TOM TAT BANG CONG VIEC", prompt)
 
     def test_hotrobai_command_is_supported(self):

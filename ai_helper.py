@@ -195,7 +195,8 @@ def resolve_facebook_style(request_text: str) -> str:
 def _build_facebook_options_prompt(request_text: str, style: str, context: str = "") -> str:
     """Prompt rieng cho workflow /hotrobai viet bai Facebook."""
     lines = [
-        "Hãy viết bài đăng Facebook cho Vườn quốc gia Yok Đôn.",
+        "Hãy viết như một trợ lý nội dung kiểu Hermes của Vườn quốc gia Yok Đôn.",
+        "Mục tiêu: giúp người phụ trách truyền thông có bản nháp Facebook dùng được ngay, không phải một câu trả lời chatbot chung chung.",
         "",
         f"Yêu cầu của người dùng: {request_text.strip()}",
         f"Phong cách ưu tiên: {style}",
@@ -206,13 +207,23 @@ def _build_facebook_options_prompt(request_text: str, style: str, context: str =
         "- Trả lời bằng tiếng Việt có dấu.",
         "- Mở đầu ngắn gọn: \"Em xin phép gửi Anh/Chị 3 phương án để chọn.\"",
         "- Tạo đúng 3 phương án.",
-        "- Mỗi phương án có tiêu đề ngắn, phần nội dung đăng Facebook, hashtag.",
+        "- Mỗi phương án có: tên phương án, caption Facebook hoàn chỉnh, gợi ý ảnh/tư liệu nếu phù hợp, hashtag.",
         "- Phương án 1: thiên về cảm xúc và lan tỏa yêu thương.",
         "- Phương án 2: thiên về thông tin/chuyên nghiệp, phù hợp xây dựng hình ảnh chuyên môn.",
         "- Phương án 3: ngắn gọn, có lời kêu gọi hành động, phù hợp tương tác nhanh.",
+        "- Nếu người dùng chưa chọn phong cách, vẫn viết ngay 3 phương án khác nhau; không hỏi lại.",
+        "- Ưu tiên câu chữ cụ thể, mộc mạc, có hình ảnh đời thường của Yok Đôn.",
         "- Không bịa số liệu, tên người, kết quả cứu hộ hoặc chi tiết chuyên môn nếu không có trong yêu cầu/ngữ cảnh.",
         "- Nếu thiếu chi tiết, viết theo hướng an toàn và gợi ý phần cần bổ sung.",
         "- Giọng văn Yok Đôn: gần gũi, tôn trọng thiên nhiên, có trách nhiệm bảo tồn, không quảng cáo quá đà.",
+        "- Tránh văn mẫu sáo rỗng như: \"bước ngoặt quan trọng\", \"tương lai xanh đẹp hơn\", \"chung tay bảo vệ thiên nhiên\" nếu không có ngữ cảnh cụ thể.",
+        "- Không dùng tiếng Anh cho tiêu đề như Option 1/Option 2; dùng \"Phương án 1\".",
+        "- Hạn chế emoji; nếu dùng, chỉ 1-2 ký tự đơn giản và không để emoji thay nội dung.",
+        "",
+        "Ví dụ chất giọng mong muốn:",
+        "- Không ai báo tin, nhưng rừng biết.",
+        "- Rừng không cần những lời quá lớn. Rừng cần những câu chuyện thật, được kể tử tế.",
+        "- Từ hôm nay, nhóm truyền thông Yok Đôn có thêm một việc: gom những điều nhỏ của rừng, kể lại bằng tiếng nói gần gũi hơn.",
     ]
     if context:
         lines.extend(["", "Ngữ cảnh được phép dùng:", context])
