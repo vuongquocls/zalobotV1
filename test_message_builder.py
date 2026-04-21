@@ -18,7 +18,7 @@ class MessageBuilderTests(unittest.TestCase):
             assignee="Hạt KL (A. Hòa, A. Nguyên)",
             status="Đang thu thập tư liệu",
             notes="Khởi động tuyến Storytelling mùa khô",
-            link="",
+            link="https://yokdon.example/bua-com-voi-giua-rung",
             row_number=7,
         )
 
@@ -28,7 +28,8 @@ class MessageBuilderTests(unittest.TestCase):
         self.assertIn("* Chủ đề/Tiêu đề bài viết: Câu chuyện Kiểm lâm: Bữa cơm vội giữa rừng mùa khô hanh", reply)
         self.assertIn("* Đơn vị/Cá nhân thực hiện: Hạt KL (A. Hòa, A. Nguyên)", reply)
         self.assertIn("* Trạng thái: Đang thu thập tư liệu", reply)
-        self.assertIn("* Lưu ý:", reply)
+        self.assertIn("* Link bài viết: https://yokdon.example/bua-com-voi-giua-rung", reply)
+        self.assertNotIn("* Lưu ý:", reply)
         self.assertNotIn("Khởi động tuyến Storytelling mùa khô", reply)
         self.assertIn(f"* Link theo dõi: {get_sheet_public_url()}", reply)
 
@@ -45,7 +46,7 @@ class MessageBuilderTests(unittest.TestCase):
             assignee="TT GDMT&DV",
             status="Đang chuẩn bị",
             notes="",
-            link="",
+            link="https://yokdon.example/voi-rung",
             row_number=8,
         )
 
@@ -56,6 +57,8 @@ class MessageBuilderTests(unittest.TestCase):
         self.assertIn("* Chủ đề/Tiêu đề bài viết: Theo dấu voi rừng Yok Đôn", reply)
         self.assertIn("* Đơn vị/Cá nhân thực hiện: TT GDMT&DV", reply)
         self.assertIn("* Trạng thái: Đang chuẩn bị", reply)
+        self.assertIn("* Link bài viết: https://yokdon.example/voi-rung", reply)
+        self.assertNotIn("* Lưu ý:", reply)
 
     def test_pending_tasks_message_uses_required_field_format(self):
         task = Task(
@@ -69,7 +72,7 @@ class MessageBuilderTests(unittest.TestCase):
             assignee="Hạt KL (A. Hòa, A. Nguyên)",
             status="Đang thu thập tư liệu",
             notes="Không đưa ghi chú vào tin nhắn",
-            link="",
+            link="https://yokdon.example/bua-com-voi-giua-rung",
             row_number=7,
         )
 
@@ -80,7 +83,8 @@ class MessageBuilderTests(unittest.TestCase):
         self.assertIn("* Chủ đề/Tiêu đề bài viết: Câu chuyện Kiểm lâm: Bữa cơm vội giữa rừng mùa khô hanh", reply)
         self.assertIn("* Đơn vị/Cá nhân thực hiện: Hạt KL (A. Hòa, A. Nguyên)", reply)
         self.assertIn("* Trạng thái: Đang thu thập tư liệu", reply)
-        self.assertIn("* Lưu ý:", reply)
+        self.assertIn("* Link bài viết: https://yokdon.example/bua-com-voi-giua-rung", reply)
+        self.assertNotIn("* Lưu ý:", reply)
         self.assertNotIn("Không đưa ghi chú vào tin nhắn", reply)
         self.assertIn(f"* Link theo dõi: {get_sheet_public_url()}", reply)
 

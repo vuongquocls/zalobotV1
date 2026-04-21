@@ -13,7 +13,8 @@ Cấu trúc sheet (Sheet 1):
   F: Định dạng bài viết
   G: Đơn vị/Cá nhân thực hiện
   H: Trạng thái
-  I: Link bài viết/Tài liệu thô
+  I: Lưu ý/Tài liệu thô
+  J: Link bài viết đã hoàn thành
 """
 
 from __future__ import annotations
@@ -163,7 +164,7 @@ def _rows_to_tasks(rows: list[list[str]]) -> list[Task]:
     for i, row in enumerate(rows):
         if i == 0:
             continue  # skip header
-        # Pad row để đủ 10 cột (thêm cột Lưu ý)
+        # Pad row để đủ 10 cột, trong đó cột J là link bài viết.
         padded = row + [""] * (10 - len(row))
         due_raw = padded[COL_DATE].strip()
         tasks.append(Task(

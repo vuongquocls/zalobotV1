@@ -37,6 +37,11 @@ def _task_line(task: "Task", show_status: bool = True) -> str:
     return "\n".join(parts)
 
 
+def _article_link_line(task: "Task") -> str:
+    """Format link bai viet tu cot J cua Google Sheet."""
+    return f"* Link bài viết: {task.link.strip() if task.link else ''}"
+
+
 def build_today_empty_message() -> str:
     """Tin nhắn khi hôm nay không có nội dung nào trong Sheet."""
     now_str = local_now().strftime("%d/%m/%Y")
@@ -71,7 +76,7 @@ def build_today_tasks_message(today_tasks: list["Task"]) -> str:
         lines.append(f"* Chủ đề/Tiêu đề bài viết: {task.topic}")
         lines.append(f"* Đơn vị/Cá nhân thực hiện: {task.assignee or '(chưa giao)'}")
         lines.append(f"* Trạng thái: {task.status or '(chưa cập nhật)'}")
-        lines.append("* Lưu ý:")
+        lines.append(_article_link_line(task))
         lines.append(f"* Link theo dõi: {_sheet_url()}")
 
     return "\n".join(lines)
@@ -102,7 +107,7 @@ def build_upcoming_tasks_message(upcoming_tasks: list["Task"], days_ahead: int =
         lines.append(f"* Chủ đề/Tiêu đề bài viết: {task.topic}")
         lines.append(f"* Đơn vị/Cá nhân thực hiện: {task.assignee or '(chưa giao)'}")
         lines.append(f"* Trạng thái: {task.status or '(chưa cập nhật)'}")
-        lines.append("* Lưu ý:")
+        lines.append(_article_link_line(task))
         lines.append(f"* Link theo dõi: {_sheet_url()}")
 
     return "\n".join(lines)
@@ -244,7 +249,7 @@ def build_pending_tasks_message(tasks: list["Task"]) -> str:
         sections.append(f"* Chủ đề/Tiêu đề bài viết: {task.topic}")
         sections.append(f"* Đơn vị/Cá nhân thực hiện: {task.assignee or '(chưa giao)'}")
         sections.append(f"* Trạng thái: {task.status or '(chưa cập nhật)'}")
-        sections.append("* Lưu ý:")
+        sections.append(_article_link_line(task))
         sections.append(f"* Link theo dõi: {_sheet_url()}")
 
     if len(pending_tasks) > 20:
