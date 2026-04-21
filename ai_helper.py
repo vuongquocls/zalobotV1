@@ -19,6 +19,48 @@ DEFAULT_AI_FALLBACK = (
     "Anh/Chị thử nhắn lại sau ít phút giúp em nhé."
 )
 
+FACEBOOK_STYLE_OPTIONS = ("vui vẻ", "cảm xúc mạnh", "nghiêm túc", "khoa học")
+FACEBOOK_STYLE_PATTERNS = {
+    "vui vẻ": ("vui vẻ", "vui ve", "tươi vui", "tuoi vui", "nhẹ nhàng", "nhe nhang"),
+    "cảm xúc mạnh": ("cảm xúc", "cam xuc", "cảm xúc mạnh", "cam xuc manh", "xúc động", "xuc dong"),
+    "nghiêm túc": ("nghiêm túc", "nghiem tuc", "chuyên nghiệp", "chuyen nghiep", "trang trọng", "trang trong"),
+    "khoa học": ("khoa học", "khoa hoc", "chuyên môn", "chuyen mon", "thông tin", "thong tin"),
+}
+
+YOKDON_CONTENT_STYLE_GUIDE = """
+BẢN GHI NHỚ YOK ĐÔN CONTENT (CẬP NHẬT 2025)
+
+Phong cách nội dung:
+- Mộc mạc, tự nhiên, gần gũi nhưng có chiều sâu.
+- Không lạm dụng ngôn từ hoa mỹ. Dùng cảm xúc thật, kể chuyện như hơi thở của rừng.
+- Có thể pha hài hước nhẹ, bụi bụi, tỉnh táo.
+- Linh hoạt giọng điệu theo bối cảnh: trang trọng, cảm xúc, dí dỏm, tâm linh vui.
+
+Chủ đề/vibe đã triển khai:
+- Kể chuyện Yok Đôn qua kiểm lâm, thiên nhiên và cộng đồng yêu rừng.
+- Chống mang chó vào rừng, bảo vệ động vật hoang dã.
+- Khoảnh khắc sinh sôi rừng khộp, gà rừng nở con, gặp thỏ trong đêm tuần tra.
+- Câu chuyện tuần tra đêm dưới mưa, lá thư từ rừng, mùa mưa gõ cửa.
+- Storytelling về những sinh linh nhỏ giữa rừng, như Tổ Yến mào non hoặc chim non Quạ Thông.
+- Vibe chạy bộ/tâm linh vui: thư mời giải chạy, giấc mơ voi đeo bib, không đi race là trái ý trời.
+- Giới thiệu loài mới ghi nhận, di sản, sách, sức khỏe cộng đồng và các ngày kỷ niệm phù hợp.
+
+Câu chữ/gu từ ngữ cần nhớ:
+- "Không ai báo tin, nhưng rừng biết."
+- "Chạy 1km – cũng đủ biết ai thật lòng!"
+- "Giữ rừng – giữ di sản – giữ chỗ cho mọi người."
+- "Không mang chó vào rừng – vì rừng không phải sân chơi."
+- "Rừng khô rụng lá cũng có mùa sinh nở."
+- "Giấc mơ voi M’nông – hóa thành bib thật trong đời."
+- "Khi mùa mưa gõ cửa, Yok Đôn cũng thức dậy."
+- "Bữa ăn cuối cùng và lời từ biệt nhỏ nhất giữa rừng."
+
+Định hướng dài hạn:
+- Bảo tồn hình ảnh giản dị, chân thực, tránh màu mè hóa rừng.
+- Lấy tình yêu thiên nhiên và lòng tự hào về bảo tồn làm trọng tâm.
+- Duy trì vibe riêng biệt: chân thực, xúc cảm, không giật gân.
+""".strip()
+
 if TYPE_CHECKING:
     from sheet_reader import Task
 
@@ -112,6 +154,63 @@ def _clean_model_output(text: str) -> str:
         cleaned,
     )
     return cleaned.strip()
+
+
+def _strip_accents(value: str) -> str:
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFD", value or "")
+    without_marks = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    return without_marks.replace("đ", "d").replace("Đ", "D")
+
+
+def detect_facebook_style(request_text: str) -> str:
+    """Nhan dien phong cach viet bai Facebook nguoi dung da neu trong yeu cau."""
+    normalized = _strip_accents(request_text or "").lower()
+    for style, patterns in FACEBOOK_STYLE_PATTERNS.items():
+        if any(_strip_accents(pattern).lower() in normalized for pattern in patterns):
+            return style
+    return ""
+
+
+def build_facebook_style_question(request_text: str) -> str:
+    """Hoi lai phong cach truoc khi viet bai de tranh ket qua chung chung."""
+    topic = (request_text or "").strip()
+    example = "/hotrobai cảm xúc mạnh - Trên đường HDV cứu hộ chim non Quạ Thông"
+    lines = [
+        "Anh muốn em viết theo phong cách nào: vui vẻ, cảm xúc mạnh, nghiêm túc hay khoa học?",
+    ]
+    if topic:
+        lines.append(f"Chủ đề em đã nhận: {topic}")
+    lines.append(f"Anh có thể nhắn lại theo mẫu: {example}")
+    return "\n".join(lines)
+
+
+def _build_facebook_options_prompt(request_text: str, style: str, context: str = "") -> str:
+    """Prompt rieng cho workflow /hotrobai viet bai Facebook."""
+    lines = [
+        "Hãy viết bài đăng Facebook cho Vườn quốc gia Yok Đôn.",
+        "",
+        f"Yêu cầu của người dùng: {request_text.strip()}",
+        f"Phong cách ưu tiên: {style}",
+        "",
+        YOKDON_CONTENT_STYLE_GUIDE,
+        "",
+        "Yêu cầu đầu ra:",
+        "- Trả lời bằng tiếng Việt có dấu.",
+        "- Mở đầu ngắn gọn: \"Em xin phép gửi Anh/Chị 3 phương án để chọn.\"",
+        "- Tạo đúng 3 phương án.",
+        "- Mỗi phương án có tiêu đề ngắn, phần nội dung đăng Facebook, hashtag.",
+        "- Phương án 1: thiên về cảm xúc và lan tỏa yêu thương.",
+        "- Phương án 2: thiên về thông tin/chuyên nghiệp, phù hợp xây dựng hình ảnh chuyên môn.",
+        "- Phương án 3: ngắn gọn, có lời kêu gọi hành động, phù hợp tương tác nhanh.",
+        "- Không bịa số liệu, tên người, kết quả cứu hộ hoặc chi tiết chuyên môn nếu không có trong yêu cầu/ngữ cảnh.",
+        "- Nếu thiếu chi tiết, viết theo hướng an toàn và gợi ý phần cần bổ sung.",
+        "- Giọng văn Yok Đôn: gần gũi, tôn trọng thiên nhiên, có trách nhiệm bảo tồn, không quảng cáo quá đà.",
+    ]
+    if context:
+        lines.extend(["", "Ngữ cảnh được phép dùng:", context])
+    return "\n".join(lines)
 
 
 async def _call_llm(
@@ -224,6 +323,25 @@ async def draft_content_from_request(request_text: str, context: str = "") -> st
         max_tokens=1500,
         fallback_message=(
             "Em tạm thời chưa dự thảo được nội dung vì dịch vụ AI đang bận. "
+            "Anh/Chị thử lại sau ít phút giúp em nhé."
+        ),
+    )
+
+
+async def draft_facebook_post_options(request_text: str, style: str, context: str = "") -> str:
+    """Soan 3 phuong an bai Facebook theo workflow /hotrobai."""
+    system = (
+        "Bạn là trợ lý truyền thông giàu kinh nghiệm của Vườn quốc gia Yok Đôn. "
+        "Bạn chuyên viết bài Facebook về bảo tồn, du lịch sinh thái, giáo dục môi trường "
+        "với giọng văn gần gũi, có cảm xúc và không bịa dữ liệu."
+    )
+    user = _build_facebook_options_prompt(request_text, style, context=context)
+    return await _call_llm(
+        system,
+        user,
+        max_tokens=2200,
+        fallback_message=(
+            "Em tạm thời chưa dự thảo được bài Facebook vì dịch vụ AI đang bận. "
             "Anh/Chị thử lại sau ít phút giúp em nhé."
         ),
     )

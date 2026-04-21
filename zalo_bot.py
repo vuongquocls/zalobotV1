@@ -25,7 +25,11 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 import brain
-from ai_helper import draft_content_from_request
+from ai_helper import (
+    build_facebook_style_question,
+    detect_facebook_style,
+    draft_facebook_post_options,
+)
 from knowledge_store import add_learning, get_learning_context
 from message_builder import (
     build_daily_reminder,
@@ -1095,8 +1099,13 @@ async def _handle_command(page, command: str, payload: str, chat_name: str) -> N
                 await _send_message(page, "Cu phap: /hotrobai <yeu cau can du thao>")
                 return
 
+            style = detect_facebook_style(payload)
+            if not style:
+                await _send_message(page, build_facebook_style_question(payload))
+                return
+
             context = _build_ai_context()
-            draft = await draft_content_from_request(payload, context=context)
+            draft = await draft_facebook_post_options(payload, style=style, context=context)
             await _send_message(page, draft)
             return
 
