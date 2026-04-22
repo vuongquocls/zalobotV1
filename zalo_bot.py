@@ -1361,6 +1361,7 @@ async def main() -> None:
         active_chat_latest_seen: dict[str, str] = {}
         sidebar_bootstrapped = False
         last_session_state = ""
+        last_sync_click_time = 0.0
 
         while True:
             try:
@@ -1441,9 +1442,10 @@ async def main() -> None:
                             only_if_reply_needed=True,
                         )
 
-                if current_is_onboarding:
+                if current_is_onboarding and time.monotonic() - last_sync_click_time > 120:
                     clicked_sync = await _maybe_click_sync_recent_messages(page)
                     if clicked_sync:
+                        last_sync_click_time = time.monotonic()
                         await asyncio.sleep(1)
 
                 fallback_targets = [
