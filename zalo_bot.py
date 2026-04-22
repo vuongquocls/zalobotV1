@@ -287,6 +287,76 @@ def _build_plan_request_message() -> str:
     )
 
 
+def _clean_relay_target(value: str) -> str:
+    target = re.split(
+        r"\s+(?:một|mot|1)\s+tiếng\b|\s+(?:nhé|nhe|nha|giúp|giup|ạ|a)\b",
+        (value or "").strip(),
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return target.strip(" .,!?:;")
+
+
+def _pronoun_for_target(target: str) -> str:
+    first_word = (target or "").strip().split(" ", 1)[0].lower()
+    normalized = _simplify_text(first_word)
+    if normalized in {"anh", "chi", "co", "chu", "bac", "em"}:
+        return first_word
+    return "Anh/Chị"
+
+
+def _build_group_greeting_message(target: str) -> str:
+    pronoun = _pronoun_for_target(target)
+    return (
+        f"Em chào {target}, chào mừng {target} đến với nhóm Truyền thông "
+        f"của Vườn quốc gia Yok Đôn, {pronoun} có cần em hỗ trợ gì không ạ?"
+    )
+
+
+def _extract_group_relay_message(text: str) -> str:
+    """Nhan dien yeu cau ca nhan de bot nhan sang nhom cau hinh san."""
+    if not text or _extract_command(text):
+        return ""
+
+    normalized = _simplify_text(text)
+    if not normalized:
+        return ""
+
+    # Mau an toan: "em hay vao chao anh Ba 1 tieng nhe".
+    greeting_trigger = re.search(
+        r"\b(?:vao|sang|qua|toi)\s+(?:nhom\s+)?chao\b",
+        normalized,
+    )
+    if greeting_trigger:
+        match = re.search(
+            r"(?:vào|vao|sang|qua|tới|toi)\s+(?:nhóm\s+|nhom\s+)?(?:chào|chao)\s+(.+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            target = _clean_relay_target(match.group(1))
+            if target:
+                return _build_group_greeting_message(target)
+
+    # Mau an toan cho noi dung tu do: "nhan vao nhom rang <noi dung>".
+    relay_trigger = re.search(
+        r"\b(?:nhan|gui|noi|bao)\s+(?:tin\s+)?(?:vao|sang|toi|trong)\s+(?:nhom|group)\b",
+        normalized,
+    )
+    if relay_trigger:
+        match = re.search(
+            r"(?:rằng|rang|là|la|:)\s*(.+)$",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if match:
+            message = match.group(1).strip(" \n\t\"'“”")
+            if message:
+                return message
+
+    return ""
+
+
 def _normalize_text(value: str) -> str:
     return _simplify_text(value)
 
@@ -1146,11 +1216,51 @@ async def _handle_natural_language(page, text: str, chat_type: str) -> None:
         await _send_message(page, "Em dang gap loi AI tam thoi. Anh/Chị thu nhan lai sau it phut giup em nhe.")
 
 
+async def _handle_personal_group_relay(page, chat_name: str, text: str) -> bool:
+    relay_message = _extract_group_relay_message(text)
+    if not relay_message:
+        return False
+
+    _log_event(
+        "group_relay.detected",
+        from_chat=chat_name,
+        group=ZALO_GROUP_NAME,
+        preview=relay_message[:160],
+    )
+    await _send_message(page, "Dạ, em sẽ làm ngay.")
+    await page.wait_for_timeout(500)
+
+    opened_group = await _open_chat_by_name(page, ZALO_GROUP_NAME)
+    if not opened_group:
+        _log_event("group_relay.error", reason="group_open_failed", group=ZALO_GROUP_NAME)
+        await _send_message(page, f"Em chưa mở được nhóm {ZALO_GROUP_NAME} để gửi tin.")
+        return True
+
+    sent_to_group = await _send_message(page, relay_message)
+    _log_event(
+        "group_relay.sent" if sent_to_group else "group_relay.error",
+        group=ZALO_GROUP_NAME,
+        ok=sent_to_group,
+        preview=relay_message[:160],
+    )
+
+    if chat_name and _is_valid_chat_title(chat_name) and _normalize_text(chat_name) != _normalize_text(ZALO_GROUP_NAME):
+        returned = await _open_chat_by_name(page, chat_name)
+        _log_event("group_relay.returned", chat=chat_name, ok=returned)
+        if returned and not sent_to_group:
+            await _send_message(page, "Em đã mở nhóm nhưng chưa gửi được tin. Anh thử lại giúp em nhé.")
+
+    return True
+
+
 async def _process_chat_message(page, chat_name: str, chat_type: str, text: str) -> None:
     command = _extract_command(text)
     if command:
         _log_event("command.detected", chat=chat_name, command=command[0])
         await _handle_command(page, command[0], command[1], chat_name)
+        return
+
+    if chat_type == "personal" and await _handle_personal_group_relay(page, chat_name, text):
         return
 
     if _should_reply(chat_type, text):
