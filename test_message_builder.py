@@ -72,7 +72,7 @@ class MessageBuilderTests(unittest.TestCase):
             assignee="Hạt KL (A. Hòa, A. Nguyên)",
             status="Đang thu thập tư liệu",
             notes="Không đưa ghi chú vào tin nhắn",
-            link="https://yokdon.example/bua-com-voi-giua-rung",
+            link="",
             row_number=7,
         )
 
@@ -83,7 +83,7 @@ class MessageBuilderTests(unittest.TestCase):
         self.assertIn("* Chủ đề/Tiêu đề bài viết: Câu chuyện Kiểm lâm: Bữa cơm vội giữa rừng mùa khô hanh", reply)
         self.assertIn("* Đơn vị/Cá nhân thực hiện: Hạt KL (A. Hòa, A. Nguyên)", reply)
         self.assertIn("* Trạng thái: Đang thu thập tư liệu", reply)
-        self.assertIn("* Link bài viết: https://yokdon.example/bua-com-voi-giua-rung", reply)
+        self.assertIn("* Link bài viết:", reply)
         self.assertNotIn("* Lưu ý:", reply)
         self.assertNotIn("Không đưa ghi chú vào tin nhắn", reply)
         self.assertIn(f"* Link theo dõi: {get_sheet_public_url()}", reply)

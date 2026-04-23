@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -91,6 +92,26 @@ COL_NOTES = 8
 COL_LINK = 9
 
 
+def _normalize_status(value: str) -> str:
+    """Chuan hoa trang thai de so khop duoc ca tieng Viet co dau/khong dau."""
+    text = unicodedata.normalize("NFD", value.lower().strip())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return " ".join(text.replace("đ", "d").split())
+
+
+def _has_completed_article_link(value: str) -> bool:
+    """Cot J co link bai viet that thi xem nhu viec da hoan thanh."""
+    raw = value.strip()
+    if not raw:
+        return False
+
+    normalized = _normalize_status(raw)
+    if normalized in {"-", "chua", "chua co", "none", "n/a", "na"}:
+        return False
+
+    return raw.startswith(("http://", "https://")) or raw.startswith("www.") or "." in raw
+
+
 @dataclass
 class Task:
     month: str
@@ -108,13 +129,21 @@ class Task:
 
     @property
     def is_completed(self) -> bool:
-        s = self.status.lower().strip()
-        return any(k in s for k in ("hoàn thành", "hoan thanh", "xong", "done"))
+        s = _normalize_status(self.status)
+        completed_statuses = (
+            "hoan thanh",
+            "da hoan thanh",
+            "da thuc hien",
+            "da dang",
+            "xong",
+            "done",
+        )
+        return any(k in s for k in completed_statuses) or _has_completed_article_link(self.link)
 
     @property
     def is_not_started(self) -> bool:
-        s = self.status.lower().strip()
-        return any(k in s for k in ("chưa bắt đầu", "chua bat dau")) or not s
+        s = _normalize_status(self.status)
+        return "chua bat dau" in s or not s
 
     @property
     def has_assignee(self) -> bool:
