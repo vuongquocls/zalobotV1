@@ -52,6 +52,38 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
     def test_sidebar_heading_is_not_a_chat_target(self):
         self.assertTrue(zalo_bot._should_ignore_sidebar_chat({"title": "Liên hệ (4)", "preview": "", "rawText": "Liên hệ (4)"}))
 
+    def test_zalo_pc_history_notice_is_not_a_chat_message(self):
+        self.assertTrue(
+            zalo_bot._should_ignore_sidebar_chat(
+                {
+                    "title": "Sử dụng Zalo PC để tìm tin nhắn trước ngày 09/04/2026.",
+                    "preview": "",
+                    "rawText": "Sử dụng Zalo PC để tìm tin nhắn trước ngày 09/04/2026.",
+                }
+            )
+        )
+
+    def test_sidebar_command_preview_is_not_a_chat_target(self):
+        self.assertTrue(zalo_bot._should_ignore_sidebar_chat({"title": "/nhacviec", "preview": "", "rawText": "/nhacviec"}))
+
+    def test_sidebar_sync_row_is_not_a_chat_target(self):
+        self.assertTrue(
+            zalo_bot._should_ignore_sidebar_chat(
+                {"title": "Đồng bộ tin nhắn thành công", "preview": "", "rawText": "Đồng bộ tin nhắn thành công"}
+            )
+        )
+
+    def test_select_sidebar_targets_dedupes_same_chat_title(self):
+        chats = [
+            {"title": "NĐ", "preview": "tin 1", "unreadCount": 1, "isMinePreview": False, "top": 10},
+            {"title": "NĐ", "preview": "tin 2", "unreadCount": 1, "isMinePreview": False, "top": 50},
+        ]
+
+        changed, next_state = zalo_bot._select_sidebar_targets(chats, {}, True)
+
+        self.assertEqual([chat["preview"] for chat in changed], ["tin 1"])
+        self.assertEqual(list(next_state), ["nd"])
+
     def test_personal_group_greeting_request_is_detected(self):
         message = zalo_bot._extract_group_relay_message("Em hãy vào chào anh Ba 1 tiếng nhé")
 

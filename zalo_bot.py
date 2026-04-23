@@ -745,6 +745,7 @@ async def _capture_chat_state(page) -> dict:
                     if (normalized === 'tin nhắn' || normalized === 'tin nhan') return true;
                     if (normalized === 'tải về để xem lâu dài' || normalized === 'tai ve de xem lau dai') return true;
                     if (normalized.startsWith('sử dụng ứng dụng zalo pc') || normalized.startsWith('su dung ung dung zalo pc')) return true;
+                    if (normalized.startsWith('sử dụng zalo pc để tìm tin nhắn trước ngày') || normalized.startsWith('su dung zalo pc de tim tin nhan truoc ngay')) return true;
                     if (normalized.startsWith('chào mừng đến với zalo pc') || normalized.startsWith('chao mung den voi zalo pc')) return true;
                     return false;
                 };
@@ -938,17 +939,19 @@ async def _scan_sidebar_chats(page) -> list[dict]:
                 }
 
                 rows.sort((a, b) => a.top - b.top || b.width - a.width);
-                const unique = [];
-                const seen = new Set();
+                const byTitle = new Map();
                 for (const row of rows) {
-                    const key = `${Math.round(row.y / 10)}`;
-                    const normalizedTitle = row.title.toLowerCase();
-                    if (!seen.has(key + ':' + normalizedTitle)) {
-                        seen.add(key + ':' + normalizedTitle);
-                        unique.push(row);
+                    const normalizedTitle = row.title.toLowerCase().replace(/\\s+/g, ' ').trim();
+                    const existing = byTitle.get(normalizedTitle);
+                    if (
+                        !existing ||
+                        Number(row.unreadCount || 0) > Number(existing.unreadCount || 0) ||
+                        (!existing.preview && row.preview)
+                    ) {
+                        byTitle.set(normalizedTitle, row);
                     }
                 }
-                return unique;
+                return [...byTitle.values()].sort((a, b) => a.top - b.top || b.width - a.width);
             }
             """
         )
@@ -1029,7 +1032,11 @@ def _should_ignore_sidebar_chat(chat: dict) -> bool:
 
     if not title:
         return True
+    if title.startswith("/"):
+        return True
     if title.startswith("lien he"):
+        return True
+    if title.startswith("dang dong bo tin nhan") or title.startswith("dong bo tin nhan"):
         return True
     if any(_looks_like_onboarding_text(value) for value in (title, preview, raw_text)):
         return True
@@ -1039,7 +1046,11 @@ def _should_ignore_sidebar_chat(chat: dict) -> bool:
         return True
     if raw_text.startswith("su dung ung dung zalo pc de tim tin nhan truoc ngay"):
         return True
+    if raw_text.startswith("su dung zalo pc de tim tin nhan truoc ngay"):
+        return True
     if title.startswith("su dung ung dung zalo pc de tim tin nhan truoc ngay"):
+        return True
+    if title.startswith("su dung zalo pc de tim tin nhan truoc ngay"):
         return True
     return False
 
@@ -1064,15 +1075,20 @@ def _chat_title_matches(expected: str, actual: str) -> bool:
 def _select_sidebar_targets(chats: list[dict], sidebar_state: dict, bootstrapped: bool) -> tuple[list[dict], dict]:
     next_state = dict(sidebar_state)
     candidates = []
+    seen_titles = set()
 
     for chat in chats:
         if _should_ignore_sidebar_chat(chat):
             continue
 
         title = chat.get("title", "").strip()
+        state_key = _normalize_text(title) or title
+        if state_key in seen_titles:
+            continue
+        seen_titles.add(state_key)
         signature = _sidebar_signature(chat)
-        previous_signature = next_state.get(title)
-        next_state[title] = signature
+        previous_signature = next_state.get(state_key)
+        next_state[state_key] = signature
 
         if not bootstrapped:
             continue
