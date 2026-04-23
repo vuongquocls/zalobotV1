@@ -30,6 +30,28 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
     def test_group_does_not_reply_to_general_chat(self):
         self.assertFalse(zalo_bot._should_reply("group", "hôm nay trời nóng quá"))
 
+    def test_sidebar_signature_ignores_time_only_raw_text_changes(self):
+        first = {
+            "title": "Quốc",
+            "preview": "chào em",
+            "unreadCount": 1,
+            "isMinePreview": False,
+            "rawText": "Quốc\nchào em\nvài giây",
+        }
+        later = {
+            **first,
+            "rawText": "Quốc\nchào em\n1 phút",
+        }
+
+        self.assertEqual(zalo_bot._sidebar_signature(first), zalo_bot._sidebar_signature(later))
+
+    def test_opened_sidebar_chat_must_match_expected_title(self):
+        self.assertTrue(zalo_bot._chat_title_matches("Truyền thông Yok Đôn", "Truyền thông Yok Đôn"))
+        self.assertFalse(zalo_bot._chat_title_matches("Quốc", "Truyền thông Yok Đôn"))
+
+    def test_sidebar_heading_is_not_a_chat_target(self):
+        self.assertTrue(zalo_bot._should_ignore_sidebar_chat({"title": "Liên hệ (4)", "preview": "", "rawText": "Liên hệ (4)"}))
+
     def test_personal_group_greeting_request_is_detected(self):
         message = zalo_bot._extract_group_relay_message("Em hãy vào chào anh Ba 1 tiếng nhé")
 

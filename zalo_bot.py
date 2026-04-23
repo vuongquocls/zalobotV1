@@ -1029,6 +1029,8 @@ def _should_ignore_sidebar_chat(chat: dict) -> bool:
 
     if not title:
         return True
+    if title.startswith("lien he"):
+        return True
     if any(_looks_like_onboarding_text(value) for value in (title, preview, raw_text)):
         return True
     if "đồng bộ tin nhắn gần đây" in raw_text or "dong bo tin nhan gan day" in raw_text:
@@ -1043,10 +1045,20 @@ def _should_ignore_sidebar_chat(chat: dict) -> bool:
 
 
 def _sidebar_signature(chat: dict) -> str:
-    preview = chat.get("preview", "")
+    preview = _normalize_text(chat.get("preview", ""))
     unread_count = chat.get("unreadCount", 0)
-    raw_text = chat.get("rawText", "")
-    return f"{preview}|{unread_count}|{raw_text}"
+    is_mine = 1 if chat.get("isMinePreview") else 0
+    # Khong dua rawText vao signature vi rawText thuong chua thoi gian
+    # "vài giây/1 phút", lam bot tuong moi scan deu co tin moi.
+    return f"{preview}|{unread_count}|{is_mine}"
+
+
+def _chat_title_matches(expected: str, actual: str) -> bool:
+    expected_normalized = _normalize_text(expected).rstrip(":")
+    actual_normalized = _normalize_text(actual).rstrip(":")
+    if not expected_normalized or not actual_normalized:
+        return False
+    return expected_normalized == actual_normalized
 
 
 def _select_sidebar_targets(chats: list[dict], sidebar_state: dict, bootstrapped: bool) -> tuple[list[dict], dict]:
@@ -1097,6 +1109,19 @@ def _pick_bootstrap_chat(chats: list[dict]) -> dict | None:
 
 async def _open_sidebar_chat(page, chat: dict) -> bool:
     try:
+        expected_title = chat.get("title", "")
+        await page.mouse.click(chat["x"], chat["y"])
+        await page.wait_for_timeout(900)
+        state = await _capture_chat_state(page)
+        current_name = state.get("chatName", "")
+        if (
+            state.get("hasComposer")
+            and _is_valid_chat_title(current_name)
+            and _chat_title_matches(expected_title, current_name)
+        ):
+            _log_event("chat.row.opened", expected=expected_title, actual=current_name, method="point")
+            return True
+
         clicked = await page.evaluate(
             """
             ({ title, preview, fallbackX, fallbackY }) => {
@@ -1168,32 +1193,42 @@ async def _open_sidebar_chat(page, chat: dict) -> bool:
             }
             """,
             {
-                "title": chat.get("title", ""),
+                "title": expected_title,
                 "preview": chat.get("preview", ""),
                 "fallbackX": chat["x"],
                 "fallbackY": chat["y"],
             },
         )
-        _log_event("chat.row.click_attempt", chat=chat.get("title", ""), result=clicked)
+        _log_event("chat.row.click_attempt", chat=expected_title, result=clicked)
         await page.wait_for_timeout(1200)
 
         state = await _capture_chat_state(page)
         current_name = state.get("chatName", "")
-        if state.get("hasComposer") and _is_valid_chat_title(current_name):
-            _log_event("chat.row.opened", expected=chat.get("title", ""), actual=current_name)
+        if (
+            state.get("hasComposer")
+            and _is_valid_chat_title(current_name)
+            and _chat_title_matches(expected_title, current_name)
+        ):
+            _log_event("chat.row.opened", expected=expected_title, actual=current_name)
             return True
+        if state.get("hasComposer") and _is_valid_chat_title(current_name):
+            _log_event("chat.row.mismatch", expected=expected_title, actual=current_name)
 
         await page.mouse.dblclick(chat["x"], chat["y"])
         await page.wait_for_timeout(1200)
         state = await _capture_chat_state(page)
         current_name = state.get("chatName", "")
-        ok = state.get("hasComposer") and _is_valid_chat_title(current_name)
+        ok = (
+            state.get("hasComposer")
+            and _is_valid_chat_title(current_name)
+            and _chat_title_matches(expected_title, current_name)
+        )
         if ok:
-            _log_event("chat.row.opened", expected=chat.get("title", ""), actual=current_name, method="dblclick")
+            _log_event("chat.row.opened", expected=expected_title, actual=current_name, method="dblclick")
         else:
             _log_event(
                 "chat.row.open_failed",
-                expected=chat.get("title", ""),
+                expected=expected_title,
                 actual=current_name,
                 onboarding=bool(state.get("isOnboarding")),
             )
