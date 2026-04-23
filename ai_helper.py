@@ -364,6 +364,40 @@ async def draft_facebook_post_options(request_text: str, style: str, context: st
     )
 
 
+async def rewrite_group_relay_message(request_text: str, fallback_message: str) -> str:
+    """Viet lai yeu cau ca nhan thanh tin nhan tu nhien de gui vao nhom Zalo."""
+    system = (
+        "Bạn là trợ lý truyền thông của Vườn quốc gia Yok Đôn. "
+        "Bạn nhận chỉ đạo riêng từ người quản lý và viết lại thành một tin nhắn ngắn, "
+        "lịch sự, tự nhiên để gửi vào nhóm Zalo nội bộ."
+    )
+    user = "\n".join(
+        [
+            "Hãy viết lại yêu cầu riêng sau thành đúng 1 tin nhắn gửi nhóm:",
+            request_text.strip(),
+            "",
+            "Quy tắc bắt buộc:",
+            "- Trả lời bằng tiếng Việt có dấu.",
+            "- Chỉ xuất nội dung tin nhắn sẽ gửi vào nhóm, không giải thích.",
+            "- Không nhắc rằng có người khác bảo bạn nói.",
+            "- Không bê nguyên câu lệnh của người dùng vào nhóm.",
+            "- Giọng thân thiện, lịch sự, có vai trợ lý của nhóm Truyền thông Yok Đôn.",
+            "- Nếu là lời khen, viết vui vẻ vừa phải, không quá lố.",
+            "- Nếu là lời chào, chào tự nhiên và có thể hỏi người đó cần hỗ trợ gì không.",
+            "- Không gửi nội dung xúc phạm, riêng tư, nhạy cảm hoặc gây mất đoàn kết.",
+            "- Tối đa 3 câu, dưới 450 ký tự.",
+            "",
+            f"Nếu không chắc chắn, hãy dùng tinh thần của câu dự phòng này: {fallback_message}",
+        ]
+    )
+    return await _call_llm(
+        system,
+        user,
+        max_tokens=350,
+        fallback_message=fallback_message,
+    )
+
+
 async def answer_question(question: str, context: str = "") -> str:
     """Trả lời câu hỏi tự do liên quan đến công việc truyền thông."""
     system = (

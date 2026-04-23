@@ -28,6 +28,7 @@ import brain
 from ai_helper import (
     draft_facebook_post_options,
     resolve_facebook_style,
+    rewrite_group_relay_message,
 )
 from knowledge_store import add_learning, get_learning_context
 from message_builder import (
@@ -297,6 +298,18 @@ def _clean_relay_target(value: str) -> str:
     return target.strip(" .,!?:;")
 
 
+def _clean_complex_relay_target(value: str) -> str:
+    """Lay rieng ten nguoi/doi tuong, khong gom cac yeu cau phu nhu 'va khen...'."""
+    target = _clean_relay_target(value)
+    target = re.split(
+        r"\s+(?:và|va|rồi|roi)\s+(?:khen|chúc|chuc|nhắc|nhac|mời|moi|nói|noi|báo|bao|cảm ơn|cam on|xin lỗi|xin loi)\b",
+        target,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return target.strip(" .,!?:;")
+
+
 def _pronoun_for_target(target: str) -> str:
     first_word = (target or "").strip().split(" ", 1)[0].lower()
     normalized = _simplify_text(first_word)
@@ -313,14 +326,75 @@ def _build_group_greeting_message(target: str) -> str:
     )
 
 
-def _extract_group_relay_message(text: str) -> str:
+COMPLEX_RELAY_KEYWORDS = (
+    "khen",
+    "chuc mung",
+    "chuc",
+    "nhac",
+    "moi",
+    "cam on",
+    "xin loi",
+    "dong vien",
+    "gioi thieu",
+    "thong bao",
+    "nhan tien",
+    "bao giup",
+)
+UNSAFE_RELAY_KEYWORDS = (
+    "chui",
+    "chửi",
+    "mắng",
+    "đe dọa",
+    "de doa",
+    "dọa",
+    "doa",
+    "xuc pham",
+    "xúc phạm",
+    "mat day",
+    "mất dạy",
+)
+
+
+def _looks_like_complex_relay(text: str, candidate_message: str = "") -> bool:
+    normalized = _simplify_text(f"{text} {candidate_message}")
+    return any(keyword in normalized for keyword in COMPLEX_RELAY_KEYWORDS)
+
+
+def _looks_like_unsafe_relay(text: str) -> bool:
+    normalized = _simplify_text(text)
+    return any(keyword in normalized for keyword in UNSAFE_RELAY_KEYWORDS)
+
+
+def _fallback_complex_greeting_message(target: str, request_text: str) -> str:
+    pronoun = _pronoun_for_target(target)
+    lines = [
+        f"Em chào {target} ạ.",
+    ]
+    if "khen" in _simplify_text(request_text):
+        lines.append(f"Em xin phép khen {pronoun} một câu: hôm nay {pronoun} rất phong độ và dễ mến.")
+    lines.append(
+        f"Chào mừng {pronoun} đến với nhóm Truyền thông của Vườn quốc gia Yok Đôn; "
+        f"{pronoun} cần em hỗ trợ gì cứ nhắn em nhé."
+    )
+    return " ".join(lines)
+
+
+def _extract_group_relay_request(text: str) -> dict | None:
     """Nhan dien yeu cau ca nhan de bot nhan sang nhom cau hinh san."""
     if not text or _extract_command(text):
-        return ""
+        return None
 
     normalized = _simplify_text(text)
     if not normalized:
-        return ""
+        return None
+
+    if _looks_like_unsafe_relay(text):
+        return {
+            "blocked": True,
+            "message": "Em chưa gửi nội dung này vào nhóm vì nội dung có thể gây mất thiện cảm. Anh điều chỉnh lại lời nhắn giúp em nhé.",
+            "fallback": "",
+            "needs_llm": False,
+        }
 
     # Mau an toan: "em hay vao chao anh Ba 1 tieng nhe".
     greeting_trigger = re.search(
@@ -334,9 +408,18 @@ def _extract_group_relay_message(text: str) -> str:
             flags=re.IGNORECASE,
         )
         if match:
-            target = _clean_relay_target(match.group(1))
+            raw_target = match.group(1)
+            target = _clean_complex_relay_target(raw_target)
             if target:
-                return _build_group_greeting_message(target)
+                simple_message = _build_group_greeting_message(target)
+                complex_message = _fallback_complex_greeting_message(target, text)
+                needs_llm = _looks_like_complex_relay(text, raw_target)
+                return {
+                    "blocked": False,
+                    "message": simple_message,
+                    "fallback": complex_message if needs_llm else simple_message,
+                    "needs_llm": needs_llm,
+                }
 
     # Mau an toan cho noi dung tu do: "nhan vao nhom rang <noi dung>".
     relay_trigger = re.search(
@@ -352,9 +435,49 @@ def _extract_group_relay_message(text: str) -> str:
         if match:
             message = match.group(1).strip(" \n\t\"'“”")
             if message:
-                return message
+                return {
+                    "blocked": False,
+                    "message": message,
+                    "fallback": message,
+                    "needs_llm": _looks_like_complex_relay(text, message),
+                }
 
-    return ""
+    return None
+
+
+def _clean_group_relay_llm_output(value: str, fallback: str) -> str:
+    cleaned = (value or "").strip().strip("\"'“”")
+    cleaned = re.sub(r"(?i)^\s*(nội dung gửi nhóm|tin nhắn gửi nhóm)\s*:\s*", "", cleaned).strip()
+    if not cleaned:
+        return fallback
+    if _looks_like_unsafe_relay(cleaned):
+        return fallback
+    if len(cleaned) > 700:
+        return cleaned[:700].rsplit(" ", 1)[0].strip() + "..."
+    return cleaned
+
+
+async def _build_group_relay_message(text: str) -> dict | None:
+    request = _extract_group_relay_request(text)
+    if not request:
+        return None
+    if request.get("blocked"):
+        return request
+    if not request.get("needs_llm"):
+        return request
+
+    fallback = request.get("fallback") or request.get("message") or ""
+    rewritten = await rewrite_group_relay_message(text, fallback)
+    request["message"] = _clean_group_relay_llm_output(rewritten, fallback)
+    return request
+
+
+def _extract_group_relay_message(text: str) -> str:
+    """Ham dong bo cho test/logic cu: tra ve cau fallback neu nhan dien duoc."""
+    request = _extract_group_relay_request(text)
+    if not request or request.get("blocked"):
+        return ""
+    return request.get("fallback") or request.get("message") or ""
 
 
 def _normalize_text(value: str) -> str:
@@ -1217,14 +1340,27 @@ async def _handle_natural_language(page, text: str, chat_type: str) -> None:
 
 
 async def _handle_personal_group_relay(page, chat_name: str, text: str) -> bool:
-    relay_message = _extract_group_relay_message(text)
-    if not relay_message:
+    relay_request = await _build_group_relay_message(text)
+    if not relay_request:
         return False
+
+    if relay_request.get("blocked"):
+        await _send_message(page, relay_request["message"])
+        _log_event(
+            "group_relay.blocked",
+            from_chat=chat_name,
+            reason="unsafe_content",
+            text=text[:160],
+        )
+        return True
+
+    relay_message = relay_request["message"]
 
     _log_event(
         "group_relay.detected",
         from_chat=chat_name,
         group=ZALO_GROUP_NAME,
+        llm=bool(relay_request.get("needs_llm")),
         preview=relay_message[:160],
     )
     await _send_message(page, "Dạ, em sẽ làm ngay.")
