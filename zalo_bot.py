@@ -898,6 +898,30 @@ async def _click_search_input_with_modal_retry(page, search_input, chat_name: st
         return False
 
 
+async def _clear_sidebar_search_filter(page) -> bool:
+    search_input = await _get_visible_locator(page, SEARCH_INPUT_SELECTORS)
+    if search_input is None:
+        return False
+
+    try:
+        current_value = await search_input.input_value(timeout=1000)
+    except Exception:
+        current_value = ""
+
+    if not current_value:
+        return False
+
+    try:
+        await search_input.fill("")
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(500)
+        _log_event("search_filter.cleared", previous=current_value[:80])
+        return True
+    except Exception as exc:
+        _log_event("search_filter.clear_error", error=_serialize_error(exc))
+        return False
+
+
 async def _maybe_click_sync_recent_messages(page) -> bool:
     candidates = [
         page.get_by_text("Nhấn để đồng bộ ngay"),
@@ -1367,6 +1391,7 @@ async def _open_chat_by_name(page, chat_name: str) -> bool:
 
     await page.mouse.click(coords["x"], coords["y"])
     await page.wait_for_timeout(1200)
+    await _clear_sidebar_search_filter(page)
     _log_event("chat.opened", chat=chat_name)
     return True
 
@@ -2021,6 +2046,7 @@ async def main() -> None:
                     await asyncio.sleep(5)
                     continue
 
+                await _clear_sidebar_search_filter(page)
                 await _maybe_send_scheduled_reminder(page)
                 await _maybe_send_due_custom_reminders(page)
 
