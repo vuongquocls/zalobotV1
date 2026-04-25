@@ -1864,6 +1864,7 @@ async def main() -> None:
         sidebar_bootstrapped = False
         last_session_state = ""
         last_sync_click_time = 0.0
+        last_onboarding_recover_time = 0.0
 
         while True:
             try:
@@ -1950,6 +1951,14 @@ async def main() -> None:
                     if clicked_sync:
                         last_sync_click_time = time.monotonic()
                         await asyncio.sleep(1)
+
+                if current_is_onboarding and not sidebar_chats and time.monotonic() - last_onboarding_recover_time > 60:
+                    last_onboarding_recover_time = time.monotonic()
+                    recovered = await _open_chat_by_name(page, ZALO_GROUP_NAME)
+                    _log_event("onboarding.recover", group=ZALO_GROUP_NAME, ok=recovered)
+                    if recovered:
+                        await asyncio.sleep(1)
+                        continue
 
                 fallback_targets = [
                     chat for chat in sidebar_chats
