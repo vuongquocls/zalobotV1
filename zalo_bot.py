@@ -17,7 +17,7 @@ import re
 import sys
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -64,6 +64,9 @@ REMINDER_MINUTE = int(os.getenv("REMINDER_MINUTE", "0"))
 DAYS_AHEAD = int(os.getenv("DAYS_AHEAD", "3"))
 REPLY_COOLDOWN_SECONDS = int(os.getenv("REPLY_COOLDOWN_SECONDS", "8"))
 BROWSER_NAME = os.getenv("PLAYWRIGHT_BROWSER", "chromium").strip().lower()
+CUSTOM_REMINDER_DEFAULT_HOUR = int(os.getenv("CUSTOM_REMINDER_DEFAULT_HOUR", "8"))
+CUSTOM_REMINDER_DEFAULT_MINUTE = int(os.getenv("CUSTOM_REMINDER_DEFAULT_MINUTE", "0"))
+CUSTOM_REMINDER_RETRY_SECONDS = int(os.getenv("CUSTOM_REMINDER_RETRY_SECONDS", "60"))
 
 BOT_NAME_RAW = os.getenv("BOT_NAME", "Nhan Vien Moi Yok Don")
 BOT_NAMES = [name.strip().lower() for name in BOT_NAME_RAW.split(",") if name.strip()]
@@ -155,6 +158,16 @@ def _extract_command(text: str) -> tuple[str, str] | None:
     return command, payload
 
 
+def _strip_bot_mentions(text: str) -> str:
+    cleaned = text or ""
+    for alias in BOT_ALIASES:
+        alias_text = alias.lstrip("@")
+        if not alias_text:
+            continue
+        cleaned = re.sub(rf"@?\s*{re.escape(alias_text)}", " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _strip_accents(value: str) -> str:
     normalized = unicodedata.normalize("NFD", value or "")
     without_marks = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
@@ -210,6 +223,217 @@ def _is_bot_mentioned(text: str) -> bool:
     return bool(_find_bot_mention_alias(text))
 
 
+REMINDER_TASK_STARTERS = (
+    "cap",
+    "cap nhat",
+    "dang",
+    "dang bai",
+    "don",
+    "bo sung",
+    "lam",
+    "gui",
+    "chuan bi",
+    "hop",
+    "len",
+    "kiem tra",
+)
+REMINDER_TEMPORAL_FILLERS_RE = re.compile(
+    r"^(?:sáng|sang|chiều|chieu|tối|toi|trưa|trua|ngày|ngay|mai|vào|vao|lúc|luc)\s+",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_custom_reminder_request(text: str) -> bool:
+    if _extract_command(text):
+        return False
+    normalized = _simplify_text(_strip_bot_mentions(text))
+    return bool(
+        re.search(
+            r"\b(?:nhac|nho\s+em\s+nhac|em\s+nhac)\s+(?:anh|chi|co|chu|bac|em)\b",
+            normalized,
+        )
+    )
+
+
+def _parse_time_from_text(text: str) -> tuple[int | None, int | None, list[tuple[int, int]]]:
+    spans: list[tuple[int, int]] = []
+    match = re.search(r"\b(\d{1,2})(?::|h)(\d{0,2})\b", text or "", flags=re.IGNORECASE)
+    if not match:
+        return None, None, spans
+
+    hour = int(match.group(1))
+    minute = int(match.group(2) or "0")
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None, None, spans
+
+    normalized = _simplify_text(text)
+    if any(word in normalized for word in ("chieu", "toi")) and 1 <= hour <= 11:
+        hour += 12
+
+    start, end = match.span()
+    # Remove nearby Vietnamese time-of-day hints, e.g. "08:00 sáng".
+    suffix = re.match(r"\s*(?:sáng|sang|chiều|chieu|tối|toi|trưa|trua)\b", text[end:], flags=re.IGNORECASE)
+    if suffix:
+        end += suffix.end()
+    prefix = re.search(r"(?:vào|vao|lúc|luc)\s*$", text[:start], flags=re.IGNORECASE)
+    if prefix:
+        start = prefix.start()
+
+    spans.append((start, end))
+    return hour, minute, spans
+
+
+def _parse_date_from_text(text: str, now: datetime) -> tuple[datetime.date | None, list[tuple[int, int]]]:
+    spans: list[tuple[int, int]] = []
+    match = re.search(
+        r"(?:ngày|ngay)?\s*\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b",
+        text or "",
+        flags=re.IGNORECASE,
+    )
+    if match:
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year_raw = match.group(3)
+        year = int(year_raw) if year_raw else now.year
+        if year < 100:
+            year += 2000
+        try:
+            spans.append(match.span())
+            return datetime(year, month, day, tzinfo=now.tzinfo).date(), spans
+        except ValueError:
+            return None, []
+
+    relative = re.search(r"\b(?:sáng\s+mai|sang\s+mai|ngày\s+mai|ngay\s+mai|mai)\b", text or "", flags=re.IGNORECASE)
+    if relative:
+        spans.append(relative.span())
+        return (now + timedelta(days=1)).date(), spans
+
+    return None, spans
+
+
+def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    if not spans:
+        return text
+    chunks = []
+    cursor = 0
+    for start, end in sorted(spans):
+        chunks.append(text[cursor:start])
+        cursor = max(cursor, end)
+    chunks.append(text[cursor:])
+    return re.sub(r"\s+", " ", "".join(chunks)).strip(" ,.;:-")
+
+
+def _split_reminder_target_and_task(text_without_time: str) -> tuple[str, str]:
+    words = (text_without_time or "").strip().split()
+    if len(words) < 3:
+        return "", ""
+
+    first = _simplify_text(words[0])
+    if first not in {"anh", "chi", "co", "chu", "bac", "em"}:
+        return "", ""
+
+    boundary = len(words)
+    for index in range(1, len(words)):
+        one = _simplify_text(words[index])
+        two = _simplify_text(" ".join(words[index : index + 2]))
+        if one in REMINDER_TASK_STARTERS or two in REMINDER_TASK_STARTERS:
+            boundary = index
+            break
+
+    if boundary <= 1 or boundary >= len(words):
+        return "", ""
+
+    target = " ".join(words[:boundary]).strip(" ,.;:-")
+    task = " ".join(words[boundary:]).strip(" ,.;:-")
+    while True:
+        updated = REMINDER_TEMPORAL_FILLERS_RE.sub("", task).strip(" ,.;:-")
+        if updated == task:
+            break
+        task = updated
+    task = re.sub(r"\s+(?:vào|vao|lúc|luc)$", "", task, flags=re.IGNORECASE).strip(" ,.;:-")
+    return target, task
+
+
+def _parse_custom_reminder_request(text: str, chat_name: str, now: datetime | None = None) -> dict | None:
+    if not _looks_like_custom_reminder_request(text):
+        return None
+
+    now = now or local_now()
+    cleaned = _strip_bot_mentions(text)
+    match = re.search(r"\bnhắc\s+(.+)$|\bnhac\s+(.+)$", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return {"error": "missing_content"}
+
+    reminder_body = (match.group(1) or match.group(2) or "").strip(" ,.;:-")
+    hour, minute, time_spans = _parse_time_from_text(reminder_body)
+    due_date, date_spans = _parse_date_from_text(reminder_body, now)
+    body_without_time = _remove_spans(reminder_body, [*time_spans, *date_spans])
+    target, task = _split_reminder_target_and_task(body_without_time)
+    if not target or not task:
+        return {"error": "missing_target_or_task"}
+
+    if hour is None:
+        hour = CUSTOM_REMINDER_DEFAULT_HOUR
+        minute = CUSTOM_REMINDER_DEFAULT_MINUTE
+    if minute is None:
+        minute = 0
+
+    if due_date is None:
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if time_spans and candidate > now:
+            due_at = candidate
+        else:
+            due_at = candidate + timedelta(days=1)
+    else:
+        due_at = datetime.combine(due_date, datetime.min.time(), tzinfo=now.tzinfo).replace(
+            hour=hour,
+            minute=minute,
+        )
+
+    if due_at <= now:
+        due_at = due_at + timedelta(days=1)
+
+    created_at = now.isoformat(timespec="seconds")
+    reminder_id = f"rem-{int(now.timestamp())}-{abs(hash((chat_name, target, task, due_at.isoformat()))) % 100000}"
+    return {
+        "id": reminder_id,
+        "chat_name": chat_name or ZALO_GROUP_NAME,
+        "target": target,
+        "task": task,
+        "due_at": due_at.isoformat(timespec="seconds"),
+        "created_at": created_at,
+        "source_text": text,
+        "sent": False,
+    }
+
+
+def _format_reminder_due_at(value: str) -> str:
+    due_at = datetime.fromisoformat(value)
+    return due_at.strftime("%H:%M ngày %d/%m/%Y")
+
+
+def _build_custom_reminder_confirmation(reminder: dict) -> str:
+    return (
+        "Em đã ghi nhớ.\n"
+        f"- Sẽ nhắc: {reminder['target']}\n"
+        f"- Lúc: {_format_reminder_due_at(reminder['due_at'])}\n"
+        f"- Việc: {reminder['task']}"
+    )
+
+
+def _build_due_custom_reminder_message(reminder: dict) -> str:
+    target = reminder.get("target", "Anh/Chị")
+    task = reminder.get("task", "việc đã hẹn")
+    return f"{target} ơi, em nhắc việc: {task}."
+
+
+def _save_custom_reminder(reminder: dict) -> None:
+    state = _load_runtime_state()
+    reminders = state.setdefault("custom_reminders", [])
+    reminders.append(reminder)
+    _save_runtime_state(state)
+
+
 def _is_group_text_directed_to_bot(text: str) -> bool:
     """Zalo native mentions can be stripped from bubble text; keep safe direct-ask fallback."""
     normalized = _simplify_text(text)
@@ -243,6 +467,8 @@ def _should_reply(chat_type: str, text: str) -> bool:
         return False
     if _extract_command(text):
         return True
+    if _looks_like_custom_reminder_request(text):
+        return True
     if chat_type == "personal":
         return True
     matched_alias = _find_bot_mention_alias(text)
@@ -274,6 +500,7 @@ def _build_help_message() -> str:
             "/hotrobai <yeu cau> - Du thao noi dung truyen thong.",
             "/hoc <dieu can nho> - Day bot mot ghi nho moi.",
             "/help - Xem lai huong dan.",
+            "Nhac viec tu nhien: nhac anh Phuong 08:00 sang ngay 26/4/2026 cap nhat ke hoach.",
             "",
             f"Sheet hien tai: {sheet_url}",
         ]
@@ -1304,6 +1531,65 @@ async def _maybe_send_scheduled_reminder(page) -> None:
         _save_runtime_state(state)
 
 
+async def _maybe_send_due_custom_reminders(page) -> None:
+    now = local_now()
+    state = _load_runtime_state()
+    reminders = state.get("custom_reminders", [])
+    if not isinstance(reminders, list) or not reminders:
+        return
+
+    changed = False
+    for reminder in reminders:
+        if reminder.get("sent"):
+            continue
+
+        try:
+            due_at = datetime.fromisoformat(reminder.get("due_at", ""))
+        except ValueError:
+            reminder["sent"] = True
+            reminder["error"] = "invalid_due_at"
+            changed = True
+            continue
+
+        if due_at > now:
+            continue
+
+        last_attempt_raw = reminder.get("last_attempt_at")
+        if last_attempt_raw:
+            try:
+                last_attempt_at = datetime.fromisoformat(last_attempt_raw)
+                if (now - last_attempt_at).total_seconds() < CUSTOM_REMINDER_RETRY_SECONDS:
+                    continue
+            except ValueError:
+                pass
+
+        chat_name = reminder.get("chat_name") or ZALO_GROUP_NAME
+        reminder["last_attempt_at"] = now.isoformat(timespec="seconds")
+        changed = True
+        _log_event(
+            "custom_reminder.due",
+            chat=chat_name,
+            target=reminder.get("target", ""),
+            task=(reminder.get("task", "") or "")[:120],
+            due_at=reminder.get("due_at", ""),
+        )
+
+        if not await _open_chat_by_name(page, chat_name):
+            _log_event("custom_reminder.error", reason="chat_open_failed", chat=chat_name)
+            continue
+
+        ok = await _send_message(page, _build_due_custom_reminder_message(reminder))
+        if ok:
+            reminder["sent"] = True
+            reminder["sent_at"] = local_now().isoformat(timespec="seconds")
+            _log_event("custom_reminder.sent", chat=chat_name, reminder_id=reminder.get("id", ""))
+        else:
+            _log_event("custom_reminder.error", reason="send_failed", chat=chat_name)
+
+    if changed:
+        _save_runtime_state(state)
+
+
 async def _handle_command(page, command: str, payload: str, chat_name: str) -> None:
     try:
         if command == "help":
@@ -1390,6 +1676,32 @@ async def _handle_natural_language(page, text: str, chat_type: str) -> None:
         await _send_message(page, "Em dang gap loi AI tam thoi. Anh/Chị thu nhan lai sau it phut giup em nhe.")
 
 
+async def _handle_custom_reminder_request(page, chat_name: str, text: str) -> bool:
+    reminder = _parse_custom_reminder_request(text, chat_name)
+    if not reminder:
+        return False
+
+    if reminder.get("error"):
+        await _send_message(
+            page,
+            "Em hiểu Anh/Chị muốn em nhắc việc, nhưng em chưa tách được đủ người được nhắc, thời gian và nội dung việc. "
+            "Anh/Chị nhắn theo mẫu: nhắc anh Phương 08:00 sáng ngày 26/4/2026 cập nhật kế hoạch vào Lịch đăng bài.",
+        )
+        _log_event("custom_reminder.parse_failed", chat=chat_name, text=text[:160], error=reminder.get("error"))
+        return True
+
+    _save_custom_reminder(reminder)
+    _log_event(
+        "custom_reminder.saved",
+        chat=chat_name,
+        target=reminder.get("target", ""),
+        task=(reminder.get("task", "") or "")[:120],
+        due_at=reminder.get("due_at", ""),
+    )
+    await _send_message(page, _build_custom_reminder_confirmation(reminder))
+    return True
+
+
 async def _handle_personal_group_relay(page, chat_name: str, text: str) -> bool:
     relay_request = await _build_group_relay_message(text)
     if not relay_request:
@@ -1445,6 +1757,9 @@ async def _process_chat_message(page, chat_name: str, chat_type: str, text: str)
     if command:
         _log_event("command.detected", chat=chat_name, command=command[0])
         await _handle_command(page, command[0], command[1], chat_name)
+        return
+
+    if await _handle_custom_reminder_request(page, chat_name, text):
         return
 
     if chat_type == "personal" and await _handle_personal_group_relay(page, chat_name, text):
@@ -1567,6 +1882,7 @@ async def main() -> None:
                     continue
 
                 await _maybe_send_scheduled_reminder(page)
+                await _maybe_send_due_custom_reminders(page)
 
                 sidebar_chats = await _scan_sidebar_chats(page)
                 changed_chats, next_sidebar_state = _select_sidebar_targets(

@@ -1,7 +1,9 @@
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import zalo_bot
+from time_utils import LOCAL_TZ
 
 
 class ZaloBotReplyRuleTests(unittest.TestCase):
@@ -29,6 +31,104 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
 
     def test_group_does_not_reply_to_general_chat(self):
         self.assertFalse(zalo_bot._should_reply("group", "hôm nay trời nóng quá"))
+
+    def test_group_reminder_request_is_reply_worthy_without_mention(self):
+        self.assertTrue(zalo_bot._should_reply("group", "nhắc anh Phương 08:00 sáng ngày 26/4/2026 cập nhật kế hoạch"))
+
+    def test_parse_reminder_with_explicit_date_and_time(self):
+        now = datetime(2026, 4, 25, 9, 0, tzinfo=LOCAL_TZ)
+
+        reminder = zalo_bot._parse_custom_reminder_request(
+            "nhắc anh Phương 08:00 sáng ngày 26/4/2026 cập nhật bổ sung kế hoạch vào Lịch đăng bài",
+            "Truyền thông Yok Đôn",
+            now=now,
+        )
+
+        self.assertEqual(reminder["target"], "anh Phương")
+        self.assertEqual(reminder["task"], "cập nhật bổ sung kế hoạch vào Lịch đăng bài")
+        self.assertTrue(reminder["due_at"].startswith("2026-04-26T08:00:00"))
+
+    def test_parse_reminder_with_tomorrow_after_task(self):
+        now = datetime(2026, 4, 25, 9, 0, tzinfo=LOCAL_TZ)
+
+        reminder = zalo_bot._parse_custom_reminder_request(
+            "nhắc anh Nguyên đăng bài vào 8:00 sáng mai",
+            "Truyền thông Yok Đôn",
+            now=now,
+        )
+
+        self.assertEqual(reminder["target"], "anh Nguyên")
+        self.assertEqual(reminder["task"], "đăng bài")
+        self.assertTrue(reminder["due_at"].startswith("2026-04-26T08:00:00"))
+
+    def test_parse_reminder_with_only_time_uses_today_if_future(self):
+        now = datetime(2026, 4, 25, 8, 0, tzinfo=LOCAL_TZ)
+
+        reminder = zalo_bot._parse_custom_reminder_request(
+            "nhắc anh Quốc 08:25 đón con",
+            "Truyền thông Yok Đôn",
+            now=now,
+        )
+
+        self.assertEqual(reminder["target"], "anh Quốc")
+        self.assertEqual(reminder["task"], "đón con")
+        self.assertTrue(reminder["due_at"].startswith("2026-04-25T08:25:00"))
+
+    def test_parse_reminder_without_time_defaults_to_tomorrow_morning(self):
+        now = datetime(2026, 4, 25, 9, 0, tzinfo=LOCAL_TZ)
+
+        reminder = zalo_bot._parse_custom_reminder_request(
+            "nhắc anh Nghĩa cập nhật link bài đã đăng vào Lịch",
+            "Truyền thông Yok Đôn",
+            now=now,
+        )
+
+        self.assertEqual(reminder["target"], "anh Nghĩa")
+        self.assertEqual(reminder["task"], "cập nhật link bài đã đăng vào Lịch")
+        self.assertTrue(reminder["due_at"].startswith("2026-04-26T08:00:00"))
+
+    def test_due_custom_reminder_is_sent_to_saved_group(self):
+        async def run_case():
+            state = {
+                "custom_reminders": [
+                    {
+                        "id": "rem-1",
+                        "chat_name": "Truyền thông Yok Đôn",
+                        "target": "anh Quốc",
+                        "task": "đón con",
+                        "due_at": "2026-04-25T08:25:00+07:00",
+                        "sent": False,
+                    }
+                ]
+            }
+            sent_messages = []
+            opened_chats = []
+
+            async def fake_open(_page, chat_name):
+                opened_chats.append(chat_name)
+                return True
+
+            async def fake_send(_page, text):
+                sent_messages.append(text)
+                return True
+
+            with (
+                patch.object(zalo_bot, "_load_runtime_state", return_value=state),
+                patch.object(zalo_bot, "_save_runtime_state") as save_state,
+                patch.object(zalo_bot, "local_now", return_value=datetime(2026, 4, 25, 8, 26, tzinfo=LOCAL_TZ)),
+                patch.object(zalo_bot, "_open_chat_by_name", side_effect=fake_open),
+                patch.object(zalo_bot, "_send_message", side_effect=fake_send),
+            ):
+                await zalo_bot._maybe_send_due_custom_reminders(AsyncMock())
+
+            self.assertEqual(opened_chats, ["Truyền thông Yok Đôn"])
+            self.assertEqual(sent_messages, ["anh Quốc ơi, em nhắc việc: đón con."])
+            self.assertTrue(state["custom_reminders"][0]["sent"])
+            save_state.assert_called_once()
+
+        import asyncio
+
+        asyncio.run(run_case())
 
     def test_sidebar_signature_ignores_time_only_raw_text_changes(self):
         first = {
