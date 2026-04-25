@@ -899,6 +899,41 @@ async def _click_search_input_with_modal_retry(page, search_input, chat_name: st
 
 
 async def _clear_sidebar_search_filter(page) -> bool:
+    try:
+        closed_search_mode = await page.evaluate(
+            """
+            () => {
+                const sidebarRight = Math.min(Math.max(window.innerWidth * 0.32, 320), 520);
+                const candidates = [...document.querySelectorAll('button, div, span')]
+                    .filter((el) => {
+                        const text = (el.innerText || el.textContent || '').trim();
+                        if (text !== 'Đóng' && text !== 'Dong') return false;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.top < 0 || rect.top > 90) return false;
+                        if (rect.left < 80 || rect.right > sidebarRight + 80) return false;
+                        if (rect.width < 25 || rect.height < 15) return false;
+                        return true;
+                    })
+                    .sort((a, b) => {
+                        const ar = a.getBoundingClientRect();
+                        const br = b.getBoundingClientRect();
+                        return ar.top - br.top || br.right - ar.right;
+                    });
+
+                const closeButton = candidates[0];
+                if (!closeButton) return false;
+                closeButton.click();
+                return true;
+            }
+            """
+        )
+        if closed_search_mode is True:
+            await page.wait_for_timeout(700)
+            _log_event("search_filter.closed")
+            return True
+    except Exception as exc:
+        _log_event("search_filter.close_error", error=_serialize_error(exc))
+
     search_input = await _get_visible_locator(page, SEARCH_INPUT_SELECTORS)
     if search_input is None:
         return False
@@ -906,13 +941,26 @@ async def _clear_sidebar_search_filter(page) -> bool:
     try:
         current_value = await search_input.input_value(timeout=1000)
     except Exception:
-        current_value = ""
+        try:
+            current_value = await search_input.evaluate(
+                """
+                (node) => {
+                    if ('value' in node) return node.value || '';
+                    return node.innerText || node.textContent || '';
+                }
+                """
+            )
+        except Exception:
+            current_value = ""
 
     if not current_value:
         return False
 
     try:
+        await search_input.click(timeout=2000)
         await search_input.fill("")
+        await page.keyboard.press(f"{_platform_modifier()}+A")
+        await page.keyboard.press("Backspace")
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(500)
         _log_event("search_filter.cleared", previous=current_value[:80])

@@ -237,13 +237,31 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
             search_input = AsyncMock()
             search_input.input_value.return_value = "Truyền thông Yok Đôn"
             page = AsyncMock()
+            page.evaluate.return_value = False
 
             with patch.object(zalo_bot, "_get_visible_locator", new_callable=AsyncMock, return_value=search_input):
                 cleared = await zalo_bot._clear_sidebar_search_filter(page)
 
             self.assertTrue(cleared)
+            search_input.click.assert_awaited_once()
             search_input.fill.assert_awaited_once_with("")
-            page.keyboard.press.assert_awaited_once_with("Escape")
+            page.keyboard.press.assert_any_await("Escape")
+
+        import asyncio
+
+        asyncio.run(run_case())
+
+    def test_clear_sidebar_search_filter_closes_search_mode(self):
+        async def run_case():
+            page = AsyncMock()
+            page.evaluate.return_value = True
+
+            with patch.object(zalo_bot, "_get_visible_locator", new_callable=AsyncMock) as get_visible:
+                cleared = await zalo_bot._clear_sidebar_search_filter(page)
+
+            self.assertTrue(cleared)
+            page.evaluate.assert_awaited_once()
+            get_visible.assert_not_awaited()
 
         import asyncio
 
