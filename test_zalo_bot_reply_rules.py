@@ -32,6 +32,27 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
     def test_group_does_not_reply_to_general_chat(self):
         self.assertFalse(zalo_bot._should_reply("group", "hôm nay trời nóng quá"))
 
+    def test_group_conversation_window_replies_to_followup(self):
+        self.assertTrue(
+            zalo_bot._should_reply(
+                "group",
+                "mày chào các anh và tự giới thiệu đi",
+                group_conversation_active=True,
+            )
+        )
+
+    def test_group_conversation_window_still_ignores_general_chat(self):
+        self.assertFalse(
+            zalo_bot._should_reply(
+                "group",
+                "ôi đm, mày điên à",
+                group_conversation_active=True,
+            )
+        )
+
+    def test_group_followup_without_active_window_is_ignored(self):
+        self.assertFalse(zalo_bot._should_reply("group", "mày chào các anh và tự giới thiệu đi"))
+
     def test_group_reminder_request_is_reply_worthy_without_mention(self):
         self.assertTrue(zalo_bot._should_reply("group", "nhắc anh Phương 08:00 sáng ngày 26/4/2026 cập nhật kế hoạch"))
 
@@ -349,6 +370,19 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
 
         self.assertEqual(message, "Chiều nay họp lúc 15h nhé")
 
+    def test_group_intro_relay_request_is_detected(self):
+        message = zalo_bot._extract_group_relay_message(
+            "Mày vào nhóm và chào mọi người đi. Nhóm Truyền thông Yok Đôn"
+        )
+
+        self.assertIn("Em chào các anh/chị", message)
+        self.assertIn("Nhân Viên Mới Yok Đôn", message)
+
+    def test_group_relay_accepts_enter_group_then_message_pattern(self):
+        message = zalo_bot._extract_group_relay_message("vào nhóm nhắn tin nhắn: Chúc các anh ngủ ngon")
+
+        self.assertEqual(message, "Chúc các anh ngủ ngon")
+
     def test_personal_group_relay_opens_group_and_returns_to_personal_chat(self):
         async def run_case():
             sent_messages = []
@@ -378,6 +412,54 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
             self.assertEqual(sent_messages[0], "Dạ, em sẽ làm ngay.")
             self.assertIn("Em chào anh Ba", sent_messages[1])
             self.assertEqual(opened_chats, [zalo_bot.ZALO_GROUP_NAME, "Quốc"])
+
+        import asyncio
+
+        asyncio.run(run_case())
+
+    def test_group_conversation_window_opens_after_reply(self):
+        async def run_case():
+            page = AsyncMock()
+            group_window = {}
+            processed = []
+
+            async def fake_process(_page, chat_name, chat_type, text, group_conversation_active=False):
+                processed.append((chat_name, chat_type, text, group_conversation_active))
+
+            with patch.object(zalo_bot, "_process_chat_message", side_effect=fake_process):
+                handled = await zalo_bot._maybe_process_latest_message(
+                    page,
+                    "Truyền thông Yok Đôn",
+                    "group",
+                    ["@Nhân Viên Mới Yok Đôn ơi"],
+                    {},
+                    {},
+                    only_if_reply_needed=True,
+                    group_conversation_until=group_window,
+                )
+
+            self.assertTrue(handled)
+            self.assertIn("Truyền thông Yok Đôn", group_window)
+            self.assertEqual(processed[0][2], "@Nhân Viên Mới Yok Đôn ơi")
+
+        import asyncio
+
+        asyncio.run(run_case())
+
+    def test_group_conversation_followup_reaches_natural_language_handler(self):
+        async def run_case():
+            page = AsyncMock()
+
+            with patch.object(zalo_bot, "_handle_natural_language", new_callable=AsyncMock) as natural:
+                await zalo_bot._process_chat_message(
+                    page,
+                    "Truyền thông Yok Đôn",
+                    "group",
+                    "mày chào các anh và tự giới thiệu đi",
+                    group_conversation_active=True,
+                )
+
+            natural.assert_awaited_once()
 
         import asyncio
 

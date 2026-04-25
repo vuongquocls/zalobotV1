@@ -67,6 +67,7 @@ BROWSER_NAME = os.getenv("PLAYWRIGHT_BROWSER", "chromium").strip().lower()
 CUSTOM_REMINDER_DEFAULT_HOUR = int(os.getenv("CUSTOM_REMINDER_DEFAULT_HOUR", "8"))
 CUSTOM_REMINDER_DEFAULT_MINUTE = int(os.getenv("CUSTOM_REMINDER_DEFAULT_MINUTE", "0"))
 CUSTOM_REMINDER_RETRY_SECONDS = int(os.getenv("CUSTOM_REMINDER_RETRY_SECONDS", "60"))
+GROUP_CONVERSATION_WINDOW_SECONDS = int(os.getenv("GROUP_CONVERSATION_WINDOW_SECONDS", "180"))
 
 BOT_NAME_RAW = os.getenv("BOT_NAME", "Nhan Vien Moi Yok Don")
 BOT_NAMES = [name.strip().lower() for name in BOT_NAME_RAW.split(",") if name.strip()]
@@ -497,7 +498,45 @@ def _is_group_text_directed_to_bot(text: str) -> bool:
     return any(pattern in normalized for pattern in direct_bot_questions)
 
 
-def _should_reply(chat_type: str, text: str) -> bool:
+def _is_group_conversation_followup(text: str) -> bool:
+    normalized = _simplify_text(_strip_bot_mentions(text))
+    if not normalized:
+        return False
+
+    if _extract_command(text) or _looks_like_custom_reminder_request(text):
+        return True
+
+    directed_starters = (
+        "may",
+        "em",
+        "bot",
+        "chu",
+        "nhan vien moi",
+        "nhan vien moi yok don",
+    )
+    action_patterns = (
+        "chao",
+        "tu gioi thieu",
+        "gioi thieu",
+        "lam gi",
+        "giup",
+        "xem",
+        "doc",
+        "nhac",
+        "soan",
+        "viet",
+        "tra loi",
+        "noi",
+        "bao",
+        "gui",
+        "nhan",
+    )
+    if any(normalized.startswith(starter + " ") for starter in directed_starters):
+        return any(pattern in normalized for pattern in action_patterns)
+    return any(pattern in normalized for pattern in ("tu gioi thieu di", "chao cac anh", "chao moi nguoi"))
+
+
+def _should_reply(chat_type: str, text: str, group_conversation_active: bool = False) -> bool:
     if not text.strip():
         return False
     if _extract_command(text):
@@ -511,6 +550,9 @@ def _should_reply(chat_type: str, text: str) -> bool:
         _log_event("group.mention.matched", alias=matched_alias, text=(text or "")[:200])
     elif chat_type == "group" and _is_group_text_directed_to_bot(text):
         _log_event("group.directed.matched", text=(text or "")[:200])
+        return True
+    elif chat_type == "group" and group_conversation_active and _is_group_conversation_followup(text):
+        _log_event("group.window.matched", text=(text or "")[:200])
         return True
     elif chat_type == "group":
         _log_event(
@@ -588,6 +630,15 @@ def _build_group_greeting_message(target: str) -> str:
     )
 
 
+def _build_group_self_intro_message() -> str:
+    return (
+        "Em chào các anh/chị ạ. Em là Nhân Viên Mới Yok Đôn, trợ lý AI hỗ trợ "
+        "Nhóm Truyền thông VQG Yok Đôn. Em có thể đọc lịch tiến độ, nhắc việc, "
+        "xem việc quá hạn, hỗ trợ soạn bài/caption và ghi nhớ chỉ dẫn khi được dạy. "
+        "Khi cần, anh/chị cứ tag em hoặc dùng /help nhé."
+    )
+
+
 COMPLEX_RELAY_KEYWORDS = (
     "khen",
     "chuc mung",
@@ -658,14 +709,23 @@ def _extract_group_relay_request(text: str) -> dict | None:
             "needs_llm": False,
         }
 
+    if "vao nhom" in normalized and ("tu gioi thieu" in normalized or "chao moi nguoi" in normalized or "chao tat ca" in normalized):
+        message = _build_group_self_intro_message()
+        return {
+            "blocked": False,
+            "message": message,
+            "fallback": message,
+            "needs_llm": False,
+        }
+
     # Mau an toan: "em hay vao chao anh Ba 1 tieng nhe".
     greeting_trigger = re.search(
-        r"\b(?:vao|sang|qua|toi)\s+(?:nhom\s+)?chao\b",
+        r"\b(?:vao|sang|qua|toi)\s+(?:(?:trong\s+)?nhom\s+(?:va\s+)?)?chao\b",
         normalized,
     )
     if greeting_trigger:
         match = re.search(
-            r"(?:vào|vao|sang|qua|tới|toi)\s+(?:nhóm\s+|nhom\s+)?(?:chào|chao)\s+(.+)",
+            r"(?:vào|vao|sang|qua|tới|toi)\s+(?:(?:trong\s+)?(?:nhóm|nhom)\s+(?:và|va)\s+|(?:nhóm|nhom)\s+)?(?:chào|chao)\s+(.+)",
             text,
             flags=re.IGNORECASE,
         )
@@ -685,7 +745,7 @@ def _extract_group_relay_request(text: str) -> dict | None:
 
     # Mau an toan cho noi dung tu do: "nhan vao nhom rang <noi dung>".
     relay_trigger = re.search(
-        r"\b(?:nhan|gui|noi|bao)\s+(?:tin\s+)?(?:vao|sang|toi|trong)\s+(?:nhom|group)\b",
+        r"\b(?:(?:nhan|gui|noi|bao)\s+(?:tin\s+)?(?:vao|sang|toi|trong)\s+(?:nhom|group)|(?:vao|sang|toi|trong)\s+(?:nhom|group)\s+(?:nhan|gui|noi|bao)(?:\s+tin(?:\s+nhan)?)?)\b",
         normalized,
     )
     if relay_trigger:
@@ -2062,7 +2122,13 @@ async def _handle_personal_group_relay(page, chat_name: str, text: str) -> bool:
     return True
 
 
-async def _process_chat_message(page, chat_name: str, chat_type: str, text: str) -> None:
+async def _process_chat_message(
+    page,
+    chat_name: str,
+    chat_type: str,
+    text: str,
+    group_conversation_active: bool = False,
+) -> None:
     command = _extract_command(text)
     if command:
         _log_event("command.detected", chat=chat_name, command=command[0])
@@ -2075,7 +2141,7 @@ async def _process_chat_message(page, chat_name: str, chat_type: str, text: str)
     if chat_type == "personal" and await _handle_personal_group_relay(page, chat_name, text):
         return
 
-    if _should_reply(chat_type, text):
+    if _should_reply(chat_type, text, group_conversation_active=group_conversation_active):
         _log_event("ai.triggered", chat=chat_name, chat_type=chat_type)
         await _handle_natural_language(page, text, chat_type)
 
@@ -2088,6 +2154,7 @@ async def _maybe_process_latest_message(
     last_processed_signature: dict[str, str],
     last_reply_time: dict[str, float],
     only_if_reply_needed: bool = False,
+    group_conversation_until: dict[str, float] | None = None,
 ) -> bool:
     if not incoming_messages:
         return False
@@ -2097,16 +2164,40 @@ async def _maybe_process_latest_message(
     if signature == last_processed_signature.get(chat_name):
         return False
 
-    if only_if_reply_needed and not _should_reply(chat_type, latest_message):
+    now_monotonic = time.monotonic()
+    group_conversation_until = group_conversation_until if group_conversation_until is not None else {}
+    group_conversation_active = (
+        chat_type == "group"
+        and now_monotonic < group_conversation_until.get(chat_name, 0.0)
+    )
+
+    should_reply = _should_reply(
+        chat_type,
+        latest_message,
+        group_conversation_active=group_conversation_active,
+    )
+    if only_if_reply_needed and not should_reply:
         return False
 
-    now_monotonic = time.monotonic()
     last_time = last_reply_time.get(chat_name, 0.0)
     if now_monotonic - last_time < REPLY_COOLDOWN_SECONDS:
         return False
 
     _log_event("msg.new", chat=chat_name, chat_type=chat_type, text=latest_message[:200])
-    await _process_chat_message(page, chat_name, chat_type, latest_message)
+    await _process_chat_message(
+        page,
+        chat_name,
+        chat_type,
+        latest_message,
+        group_conversation_active=group_conversation_active,
+    )
+    if chat_type == "group" and should_reply:
+        group_conversation_until[chat_name] = time.monotonic() + GROUP_CONVERSATION_WINDOW_SECONDS
+        _log_event(
+            "group.window.open",
+            chat=chat_name,
+            seconds=GROUP_CONVERSATION_WINDOW_SECONDS,
+        )
     last_processed_signature[chat_name] = signature
     last_reply_time[chat_name] = now_monotonic
     return True
@@ -2169,6 +2260,7 @@ async def main() -> None:
 
         last_processed_signature: dict[str, str] = {}
         last_reply_time: dict[str, float] = {}
+        group_conversation_until: dict[str, float] = {}
         sidebar_state: dict[str, str] = {}
         active_chat_latest_seen: dict[str, str] = {}
         sidebar_bootstrapped = False
@@ -2255,6 +2347,7 @@ async def main() -> None:
                             last_processed_signature,
                             last_reply_time,
                             only_if_reply_needed=True,
+                            group_conversation_until=group_conversation_until,
                         )
 
                 if current_is_onboarding and time.monotonic() - last_sync_click_time > 120:
@@ -2292,6 +2385,7 @@ async def main() -> None:
                                 last_processed_signature,
                                 last_reply_time,
                                 only_if_reply_needed=False,
+                                group_conversation_until=group_conversation_until,
                             )
                         continue
 
@@ -2348,6 +2442,7 @@ async def main() -> None:
                         last_processed_signature,
                         last_reply_time,
                         only_if_reply_needed=False,
+                        group_conversation_until=group_conversation_until,
                     )
 
                 await asyncio.sleep(2)
