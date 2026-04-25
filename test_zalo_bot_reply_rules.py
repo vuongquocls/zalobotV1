@@ -74,6 +74,45 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
         self.assertEqual(reminder["task"], "đón con")
         self.assertTrue(reminder["due_at"].startswith("2026-04-25T08:25:00"))
 
+    def test_parse_reminder_with_phone_call_task(self):
+        now = datetime(2026, 4, 25, 9, 4, tzinfo=LOCAL_TZ)
+
+        reminder = zalo_bot._parse_custom_reminder_request(
+            "Nhắc anh Quốc gọi điện cho mẹ lúc 9:15",
+            "Truyền thông Yok Đôn",
+            now=now,
+        )
+
+        self.assertEqual(reminder["target"], "anh Quốc")
+        self.assertEqual(reminder["task"], "gọi điện cho mẹ")
+        self.assertTrue(reminder["due_at"].startswith("2026-04-25T09:15:00"))
+
+    def test_parse_reminder_keeps_di_as_task_not_target(self):
+        now = datetime(2026, 4, 25, 8, 0, tzinfo=LOCAL_TZ)
+
+        reminder = zalo_bot._parse_custom_reminder_request(
+            "Em nhắc anh Quốc 8:25 đi đón con nhé @Nhân Viên Mới Yok Đôn",
+            "Truyền thông Yok Đôn",
+            now=now,
+        )
+
+        self.assertEqual(reminder["target"], "anh Quốc")
+        self.assertEqual(reminder["task"], "đi đón con")
+        self.assertTrue(reminder["due_at"].startswith("2026-04-25T08:25:00"))
+
+    def test_parse_reminder_accepts_short_a_title(self):
+        now = datetime(2026, 4, 25, 9, 0, tzinfo=LOCAL_TZ)
+
+        reminder = zalo_bot._parse_custom_reminder_request(
+            "Nhớ nhắc a Quốc trước khi đi test coi còn nồng độ cồn không nha @Nhân Viên Mới Yok Đôn",
+            "Truyền thông Yok Đôn",
+            now=now,
+        )
+
+        self.assertEqual(reminder["target"], "anh Quốc")
+        self.assertEqual(reminder["task"], "trước khi đi test coi còn nồng độ cồn không")
+        self.assertTrue(reminder["due_at"].startswith("2026-04-26T08:00:00"))
+
     def test_parse_reminder_without_time_defaults_to_tomorrow_morning(self):
         now = datetime(2026, 4, 25, 9, 0, tzinfo=LOCAL_TZ)
 
@@ -123,6 +162,49 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
 
             self.assertEqual(opened_chats, ["Truyền thông Yok Đôn"])
             self.assertEqual(sent_messages, ["anh Quốc ơi, em nhắc việc: đón con."])
+            self.assertTrue(state["custom_reminders"][0]["sent"])
+            save_state.assert_called_once()
+
+        import asyncio
+
+        asyncio.run(run_case())
+
+    def test_due_custom_reminder_sends_without_reopening_when_already_in_chat(self):
+        async def run_case():
+            state = {
+                "custom_reminders": [
+                    {
+                        "id": "rem-1",
+                        "chat_name": "Truyền thông Yok Đôn",
+                        "target": "anh Quốc",
+                        "task": "đi đón con",
+                        "due_at": "2026-04-25T08:25:00+07:00",
+                        "sent": False,
+                    }
+                ]
+            }
+            sent_messages = []
+
+            async def fake_send(_page, text):
+                sent_messages.append(text)
+                return True
+
+            with (
+                patch.object(zalo_bot, "_load_runtime_state", return_value=state),
+                patch.object(zalo_bot, "_save_runtime_state") as save_state,
+                patch.object(zalo_bot, "local_now", return_value=datetime(2026, 4, 25, 8, 26, tzinfo=LOCAL_TZ)),
+                patch.object(
+                    zalo_bot,
+                    "_capture_chat_state",
+                    return_value={"chatName": "Truyền\u00a0thông\u00a0Yok\u00a0Đôn", "hasComposer": True},
+                ),
+                patch.object(zalo_bot, "_open_chat_by_name", new_callable=AsyncMock) as open_chat,
+                patch.object(zalo_bot, "_send_message", side_effect=fake_send),
+            ):
+                await zalo_bot._maybe_send_due_custom_reminders(AsyncMock())
+
+            open_chat.assert_not_called()
+            self.assertEqual(sent_messages, ["anh Quốc ơi, em nhắc việc: đi đón con."])
             self.assertTrue(state["custom_reminders"][0]["sent"])
             save_state.assert_called_once()
 

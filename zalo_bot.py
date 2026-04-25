@@ -160,11 +160,23 @@ def _extract_command(text: str) -> tuple[str, str] | None:
 
 def _strip_bot_mentions(text: str) -> str:
     cleaned = text or ""
-    for alias in BOT_ALIASES:
+    known_names = {
+        *BOT_ALIASES,
+        *BOT_NAMES,
+        *BOT_NAME_ALIASES,
+        "Nhân Viên Mới Yok Đôn",
+        "Nhân Viên Mới",
+        "Nhan Vien Moi Yok Don",
+        "Nhan Vien Moi",
+        "bot ai",
+    }
+    for alias in sorted(known_names, key=len, reverse=True):
         alias_text = alias.lstrip("@")
         if not alias_text:
             continue
         cleaned = re.sub(rf"@?\s*{re.escape(alias_text)}", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"@?\s*Nhân\s+Viên\s+Mới(?:\s+Yok\s+Đôn)?", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"@?\s*Nhan\s+Vien\s+Moi(?:\s+Yok\s+Don)?", " ", cleaned, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -224,18 +236,28 @@ def _is_bot_mentioned(text: str) -> bool:
 
 
 REMINDER_TASK_STARTERS = (
+    "truoc",
+    "truoc khi",
     "cap",
     "cap nhat",
     "dang",
     "dang bai",
+    "di",
     "don",
     "bo sung",
     "lam",
     "gui",
+    "goi",
+    "goi dien",
+    "nhan",
+    "nhan tin",
+    "bao",
+    "bao lai",
     "chuan bi",
     "hop",
     "len",
     "kiem tra",
+    "test",
 )
 REMINDER_TEMPORAL_FILLERS_RE = re.compile(
     r"^(?:sáng|sang|chiều|chieu|tối|toi|trưa|trua|ngày|ngay|mai|vào|vao|lúc|luc)\s+",
@@ -249,7 +271,7 @@ def _looks_like_custom_reminder_request(text: str) -> bool:
     normalized = _simplify_text(_strip_bot_mentions(text))
     return bool(
         re.search(
-            r"\b(?:nhac|nho\s+em\s+nhac|em\s+nhac)\s+(?:anh|chi|co|chu|bac|em)\b",
+            r"\b(?:nhac|nho\s+nhac|nho\s+em\s+nhac|em\s+nhac)\s+(?:anh|a|chi|co|chu|bac|em)\b",
             normalized,
         )
     )
@@ -329,7 +351,7 @@ def _split_reminder_target_and_task(text_without_time: str) -> tuple[str, str]:
         return "", ""
 
     first = _simplify_text(words[0])
-    if first not in {"anh", "chi", "co", "chu", "bac", "em"}:
+    if first not in {"anh", "a", "chi", "co", "chu", "bac", "em"}:
         return "", ""
 
     boundary = len(words)
@@ -343,7 +365,10 @@ def _split_reminder_target_and_task(text_without_time: str) -> tuple[str, str]:
     if boundary <= 1 or boundary >= len(words):
         return "", ""
 
-    target = " ".join(words[:boundary]).strip(" ,.;:-")
+    target_words = words[:boundary]
+    if _simplify_text(target_words[0]) == "a":
+        target_words[0] = "anh"
+    target = " ".join(target_words).strip(" ,.;:-")
     task = " ".join(words[boundary:]).strip(" ,.;:-")
     while True:
         updated = REMINDER_TEMPORAL_FILLERS_RE.sub("", task).strip(" ,.;:-")
@@ -351,6 +376,16 @@ def _split_reminder_target_and_task(text_without_time: str) -> tuple[str, str]:
             break
         task = updated
     task = re.sub(r"\s+(?:vào|vao|lúc|luc)$", "", task, flags=re.IGNORECASE).strip(" ,.;:-")
+    while True:
+        updated = re.sub(
+            r"\s+(?:nhé|nhe|nha|ạ|giúp\s+em|giup\s+em)$",
+            "",
+            task,
+            flags=re.IGNORECASE,
+        ).strip(" ,.;:-")
+        if updated == task:
+            break
+        task = updated
     return target, task
 
 
@@ -1628,7 +1663,18 @@ async def _maybe_send_due_custom_reminders(page) -> None:
             due_at=reminder.get("due_at", ""),
         )
 
-        if not await _open_chat_by_name(page, chat_name):
+        current_state = await _capture_chat_state(page)
+        if not isinstance(current_state, dict):
+            current_state = {}
+        current_chat = current_state.get("chatName") or current_state.get("chatTitle") or ""
+        already_in_target_chat = (
+            current_state.get("hasComposer")
+            and current_chat
+            and _chat_title_matches(chat_name, current_chat)
+        )
+        if already_in_target_chat:
+            _log_event("custom_reminder.chat_ready", chat=chat_name)
+        elif not await _open_chat_by_name(page, chat_name):
             _log_event("custom_reminder.error", reason="chat_open_failed", chat=chat_name)
             continue
 
