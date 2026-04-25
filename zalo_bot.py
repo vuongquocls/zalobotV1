@@ -773,6 +773,59 @@ async def _focus_chat_input(page):
     return None
 
 
+async def _dismiss_blocking_modal(page) -> bool:
+    try:
+        clicked = await page.evaluate(
+            """
+            () => {
+                const isVisible = (node) => {
+                    if (!node) return false;
+                    const style = window.getComputedStyle(node);
+                    const rect = node.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 80 && rect.height > 40;
+                };
+                const modals = [...document.querySelectorAll('.zl-modal, [id^="zl-modal"], [class*="modal"]')]
+                    .filter(isVisible)
+                    .reverse();
+                for (const modal of modals) {
+                    const candidates = [...modal.querySelectorAll('button, [role="button"], div, span')]
+                        .filter((node) => {
+                            const rect = node.getBoundingClientRect();
+                            const text = (node.innerText || node.textContent || '').trim();
+                            return text && rect.width > 24 && rect.height > 16;
+                        });
+                    const preferred = candidates.find((node) => {
+                        const text = (node.innerText || node.textContent || '').trim().toLowerCase();
+                        return /^(đồng ý|dong y|đồng bộ|dong bo|tiếp tục|tiep tuc|đã hiểu|da hieu|ok|đóng|dong|bỏ qua|bo qua)$/.test(text);
+                    });
+                    if (preferred) {
+                        preferred.click();
+                        return (preferred.innerText || preferred.textContent || '').trim() || 'modal_button';
+                    }
+
+                    const close = [...modal.querySelectorAll('[class*="close"], [aria-label*="close"], [aria-label*="đóng"], [data-id*="Close"]')]
+                        .find((node) => {
+                            const rect = node.getBoundingClientRect();
+                            return rect.width > 8 && rect.height > 8;
+                        });
+                    if (close) {
+                        close.click();
+                        return 'modal_close';
+                    }
+                }
+                return '';
+            }
+            """
+        )
+        if clicked:
+            _log_event("modal.dismissed", action=clicked)
+            await page.wait_for_timeout(1000)
+            return True
+    except Exception as exc:
+        _log_event("modal.dismiss_error", error=_serialize_error(exc))
+    return False
+
+
 async def _maybe_click_sync_recent_messages(page) -> bool:
     candidates = [
         page.get_by_text("Nhấn để đồng bộ ngay"),
@@ -788,6 +841,7 @@ async def _maybe_click_sync_recent_messages(page) -> bool:
                 await candidate.click()
                 _log_event("sync.clicked")
                 await page.wait_for_timeout(2000)
+                await _dismiss_blocking_modal(page)
 
                 follow_up_buttons = [
                     page.get_by_role("button", name="Đồng ý"),
@@ -1954,6 +2008,7 @@ async def main() -> None:
 
                 if current_is_onboarding and not sidebar_chats and time.monotonic() - last_onboarding_recover_time > 60:
                     last_onboarding_recover_time = time.monotonic()
+                    await _dismiss_blocking_modal(page)
                     recovered = await _open_chat_by_name(page, ZALO_GROUP_NAME)
                     _log_event("onboarding.recover", group=ZALO_GROUP_NAME, ok=recovered)
                     if recovered:
