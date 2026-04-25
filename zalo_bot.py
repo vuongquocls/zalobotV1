@@ -1009,6 +1009,104 @@ async def _maybe_click_sync_recent_messages(page) -> bool:
     return False
 
 
+async def _recover_onboarding_screen(page, preferred_chat: str = "") -> bool:
+    """Thoat man welcome/sync cua Zalo PC de automation co lai composer."""
+    try:
+        action = await page.evaluate(
+            """
+            () => {
+                const normalize = (value) => (value || '')
+                    .normalize('NFD')
+                    .replace(/[\\u0300-\\u036f]/g, '')
+                    .replace(/đ/g, 'd')
+                    .replace(/Đ/g, 'D')
+                    .toLowerCase()
+                    .replace(/\\s+/g, ' ')
+                    .trim();
+                const pageText = document.body.innerText || '';
+                if (!/Chào mừng đến với Zalo PC|Chao mung den voi Zalo PC|Đồng bộ tin nhắn gần đây|Dong bo tin nhan gan day/.test(pageText)) {
+                    return '';
+                }
+
+                const sidebarRight = Math.min(Math.max(window.innerWidth * 0.32, 320), 520);
+                const visible = (node) => {
+                    if (!node) return false;
+                    const style = window.getComputedStyle(node);
+                    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) === 0) return false;
+                    const rect = node.getBoundingClientRect();
+                    return rect.width > 12 && rect.height > 12 && rect.bottom > 0 && rect.right > 0;
+                };
+                const clickNode = (node, label) => {
+                    const rect = node.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+                    const target = document.elementFromPoint(x, y) || node;
+                    const finalEl = target.closest('button, [role="button"], a, div, span') || target;
+                    for (const eventName of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                        finalEl.dispatchEvent(new MouseEvent(eventName, {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: x,
+                            clientY: y,
+                            button: 0,
+                        }));
+                    }
+                    if (typeof finalEl.click === 'function') finalEl.click();
+                    return label;
+                };
+
+                const candidates = [...document.querySelectorAll('button, [role="button"], a, div, span')]
+                    .filter(visible)
+                    .map((node) => {
+                        const rect = node.getBoundingClientRect();
+                        const text = normalize(node.innerText || node.textContent || node.getAttribute('aria-label') || '');
+                        return { node, rect, text };
+                    })
+                    .filter((item) => item.text && item.rect.left > sidebarRight - 20);
+
+                const preferredPatterns = [
+                    /^(bo qua|de sau|dong|da hieu|ok|huy|cancel|later|skip)$/,
+                    /^(tiep tuc|bat dau|kham pha|kham pha ngay)$/,
+                    /^(dong bo|dong bo ngay|nhan de dong bo ngay|dong y)$/,
+                ];
+                for (const pattern of preferredPatterns) {
+                    const match = candidates.find((item) => pattern.test(item.text));
+                    if (match) return clickNode(match.node, `button:${match.text}`);
+                }
+
+                const close = candidates.find((item) => {
+                    const aria = normalize(item.node.getAttribute('aria-label') || '');
+                    const cls = normalize(item.node.className || '');
+                    return aria.includes('dong') || aria.includes('close') || cls.includes('close');
+                });
+                if (close) return clickNode(close.node, 'close');
+
+                return '';
+            }
+            """
+        )
+        if action:
+            _log_event("onboarding.action", action=action)
+            await page.wait_for_timeout(1800)
+            return True
+    except Exception as exc:
+        _log_event("onboarding.action_error", error=_serialize_error(exc))
+
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(500)
+    except Exception:
+        pass
+
+    if preferred_chat:
+        await _dismiss_blocking_modal(page)
+        recovered = await _open_chat_by_name(page, preferred_chat)
+        _log_event("onboarding.search_recover", chat=preferred_chat, ok=recovered)
+        return recovered
+    return False
+
+
 async def _send_message(page, text: str) -> bool:
     _log_event("reply.start", length=len(text))
     try:
@@ -2165,13 +2263,36 @@ async def main() -> None:
                         last_sync_click_time = time.monotonic()
                         await asyncio.sleep(1)
 
-                if current_is_onboarding and not sidebar_chats and time.monotonic() - last_onboarding_recover_time > 60:
+                if current_is_onboarding and time.monotonic() - last_onboarding_recover_time > 20:
                     last_onboarding_recover_time = time.monotonic()
-                    await _dismiss_blocking_modal(page)
-                    recovered = await _open_chat_by_name(page, ZALO_GROUP_NAME)
-                    _log_event("onboarding.recover", group=ZALO_GROUP_NAME, ok=recovered)
+                    preferred_chat = ""
+                    for candidate in changed_chats or sidebar_chats:
+                        if not _should_ignore_sidebar_chat(candidate) and not candidate.get("isMinePreview"):
+                            preferred_chat = candidate.get("title", "")
+                            break
+                    if not preferred_chat:
+                        preferred_chat = ZALO_GROUP_NAME
+                    recovered = await _recover_onboarding_screen(page, preferred_chat)
+                    _log_event("onboarding.recover", chat=preferred_chat, ok=recovered)
                     if recovered:
                         await asyncio.sleep(1)
+                        state = await _capture_chat_state(page)
+                        chat_name = state.get("chatName") or preferred_chat or "Unknown"
+                        chat_type = state.get("chatType") or "unknown"
+                        incoming_messages = state.get("incomingMessages") or []
+                        has_composer = bool(state.get("hasComposer"))
+                        is_onboarding = bool(state.get("isOnboarding"))
+                        if has_composer and not is_onboarding and incoming_messages:
+                            active_chat_latest_seen[chat_name] = incoming_messages[-1]
+                            await _maybe_process_latest_message(
+                                page,
+                                chat_name,
+                                chat_type,
+                                incoming_messages,
+                                last_processed_signature,
+                                last_reply_time,
+                                only_if_reply_needed=False,
+                            )
                         continue
 
                 fallback_targets = [

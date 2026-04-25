@@ -75,7 +75,7 @@ if _or_key:
         "type": "openai",
         "name": "OpenRouter",
         "api_key": _or_key,
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         "model": os.getenv("OPENROUTER_MODEL", "meta-llama/llama-4-maverick:free"),
     })
 
