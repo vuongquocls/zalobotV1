@@ -813,6 +813,13 @@ async def _dismiss_blocking_modal(page) -> bool:
         clicked = await page.evaluate(
             """
             () => {
+                const normalize = (value) => (value || '')
+                    .normalize('NFD')
+                    .replace(/[\\u0300-\\u036f]/g, '')
+                    .replace(/đ/g, 'd')
+                    .replace(/Đ/g, 'D')
+                    .toLowerCase()
+                    .trim();
                 const isVisible = (node) => {
                     if (!node) return false;
                     const style = window.getComputedStyle(node);
@@ -830,8 +837,8 @@ async def _dismiss_blocking_modal(page) -> bool:
                             return text && rect.width > 24 && rect.height > 16;
                         });
                     const preferred = candidates.find((node) => {
-                        const text = (node.innerText || node.textContent || '').trim().toLowerCase();
-                        return /^(đồng ý|dong y|đồng bộ|dong bo|tiếp tục|tiep tuc|đã hiểu|da hieu|ok|đóng|dong|bỏ qua|bo qua)$/.test(text);
+                        const text = normalize(node.innerText || node.textContent || '');
+                        return /^(dong y|dong bo|dong bo ngay|tiep tuc|da hieu|ok|dong|bo qua|de sau|huy|cancel|later|skip)$/.test(text);
                     });
                     if (preferred) {
                         preferred.click();
@@ -847,6 +854,11 @@ async def _dismiss_blocking_modal(page) -> bool:
                         close.click();
                         return 'modal_close';
                     }
+
+                    // Zalo sometimes shows a modal layer without a reliable close button.
+                    // Removing it is safer than letting it block all automation forever.
+                    modal.remove();
+                    return 'modal_removed';
                 }
                 return '';
             }
@@ -859,6 +871,31 @@ async def _dismiss_blocking_modal(page) -> bool:
     except Exception as exc:
         _log_event("modal.dismiss_error", error=_serialize_error(exc))
     return False
+
+
+async def _click_search_input_with_modal_retry(page, search_input, chat_name: str) -> bool:
+    try:
+        await search_input.click(timeout=5000)
+        return True
+    except PlaywrightError as exc:
+        _log_event("chat.open.search_click_blocked", chat=chat_name, error=_serialize_error(exc))
+
+    dismissed = await _dismiss_blocking_modal(page)
+    if not dismissed:
+        _log_event("chat.open.failed", reason="search_click_blocked", chat=chat_name)
+        return False
+
+    search_input = await _get_visible_locator(page, SEARCH_INPUT_SELECTORS)
+    if search_input is None:
+        _log_event("chat.open.failed", reason="search_input_not_found_after_modal", chat=chat_name)
+        return False
+
+    try:
+        await search_input.click(timeout=5000)
+        return True
+    except PlaywrightError as exc:
+        _log_event("chat.open.failed", reason="search_click_retry_failed", chat=chat_name, error=_serialize_error(exc))
+        return False
 
 
 async def _maybe_click_sync_recent_messages(page) -> bool:
@@ -1311,12 +1348,14 @@ async def _find_sidebar_chat_coordinates(page, chat_name: str) -> dict | None:
 
 
 async def _open_chat_by_name(page, chat_name: str) -> bool:
+    await _dismiss_blocking_modal(page)
     search_input = await _get_visible_locator(page, SEARCH_INPUT_SELECTORS)
     if search_input is None:
         _log_event("chat.open.failed", reason="search_input_not_found", chat=chat_name)
         return False
 
-    await search_input.click()
+    if not await _click_search_input_with_modal_retry(page, search_input, chat_name):
+        return False
     await search_input.fill("")
     await search_input.fill(chat_name)
     await page.wait_for_timeout(1200)

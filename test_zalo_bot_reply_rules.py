@@ -212,6 +212,26 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
 
         asyncio.run(run_case())
 
+    def test_search_click_retries_after_dismissing_modal(self):
+        async def run_case():
+            first_input = AsyncMock()
+            first_input.click.side_effect = zalo_bot.PlaywrightError("modal blocked")
+            second_input = AsyncMock()
+
+            with (
+                patch.object(zalo_bot, "_dismiss_blocking_modal", new_callable=AsyncMock, return_value=True) as dismiss_modal,
+                patch.object(zalo_bot, "_get_visible_locator", new_callable=AsyncMock, return_value=second_input),
+            ):
+                ok = await zalo_bot._click_search_input_with_modal_retry(AsyncMock(), first_input, "Truyền thông Yok Đôn")
+
+            self.assertTrue(ok)
+            dismiss_modal.assert_awaited_once()
+            second_input.click.assert_awaited_once()
+
+        import asyncio
+
+        asyncio.run(run_case())
+
     def test_sidebar_signature_ignores_time_only_raw_text_changes(self):
         first = {
             "title": "Quốc",
