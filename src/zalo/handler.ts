@@ -12,6 +12,8 @@ import { downloadToTemp, cleanTemp } from '../utils/media.js';
 import { applyMentionsHtml, formatGroupMsgHtml, formatGroupMsg, groupCaption, topicName, truncate, escapeHtml } from '../utils/format.js';
 import { msgStore, userCache, pollStore, sentMsgStore, zaloAlbumStore, type ZaloQuoteData } from '../store.js';
 
+let telegramForumUnavailable = false;
+
 // ── Bank card HTML parser ────────────────────────────────────────────────────
 interface BankCardInfo {
   bankName: string;
@@ -99,18 +101,32 @@ async function getOrCreateTopic(
   type: 0 | 1,
   displayName: string,
   avatarUrl?: string,
-): Promise<number> {
+): Promise<number | undefined> {
+  if (telegramForumUnavailable) return undefined;
+
   const existing = store.getTopicByZalo(zaloId, type);
   if (existing !== undefined) return existing;
 
   const name  = topicName(displayName, type);
   const color = type === ThreadType.Group ? 0xFF93B2 : 0x6FB9F0;
 
-  const topic = await tgBot.telegram.createForumTopic(
-    config.telegram.groupId,
-    name,
-    { icon_color: color },
-  );
+  let topic: Awaited<ReturnType<typeof tgBot.telegram.createForumTopic>>;
+  try {
+    topic = await tgBot.telegram.createForumTopic(
+      config.telegram.groupId,
+      name,
+      { icon_color: color },
+    );
+  } catch (err) {
+    const description = (err as { response?: { description?: string } }).response?.description
+      ?? (err instanceof Error ? err.message : '');
+    if (description.includes('chat is not a forum')) {
+      telegramForumUnavailable = true;
+      console.warn('[Zalo→TG] Telegram group is not a forum; forwarding to the main chat. Reply to bridged messages to send back to Zalo.');
+      return undefined;
+    }
+    throw err;
+  }
 
   const topicId = topic.message_thread_id;
   store.set({ topicId, zaloId, type, name: displayName });
@@ -233,9 +249,12 @@ export function setupZaloHandler(api: ZaloAPI): void {
 
       // Base TG send options (with optional reply_parameters)
       const tgBase: {
-        message_thread_id: number;
+        message_thread_id?: number;
         reply_parameters?: { message_id: number; allow_sending_without_reply: boolean };
-      } = { message_thread_id: topicId };
+      } = {};
+      if (topicId !== undefined) {
+        tgBase.message_thread_id = topicId;
+      }
       if (tgReplyMsgId !== undefined) {
         tgBase.reply_parameters = { message_id: tgReplyMsgId, allow_sending_without_reply: true };
       }
@@ -366,7 +385,7 @@ ${escapeHtml(photoCaption)}`
                 const sentMsgs = await tgBot.telegram.sendMediaGroup(
                   config.telegram.groupId,
                   mediaItems,
-                  { message_thread_id: buf.topicId } as Parameters<typeof tgBot.telegram.sendMediaGroup>[2],
+                  (buf.topicId !== undefined ? { message_thread_id: buf.topicId } : {}) as Parameters<typeof tgBot.telegram.sendMediaGroup>[2],
                 );
                 // Save mapping for first photo (for reply chain)
                 if (sentMsgs.length > 0) {

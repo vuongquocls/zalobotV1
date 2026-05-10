@@ -283,7 +283,7 @@ export interface MediaGroupItem {
 interface MediaGroupBuffer {
   timer:      ReturnType<typeof setTimeout>;
   items:      MediaGroupItem[];
-  topicId:    number;
+  topicId?:   number;
   zaloId:     string;
   threadType: 0 | 1;
   replyToMsgId?: number;
@@ -327,8 +327,8 @@ interface ZaloAlbumBuffer {
   timer:      ReturnType<typeof setTimeout>;
   urls:       string[];
   senderName: string;
-  topicId:    number;
-  tgBase:     { message_thread_id: number; reply_parameters?: { message_id: number; allow_sending_without_reply: boolean } };
+  topicId?:   number;
+  tgBase:     { message_thread_id?: number; reply_parameters?: { message_id: number; allow_sending_without_reply: boolean } };
   zaloMsgIds: string[];
   zaloQuote:  ZaloQuoteData | undefined;
 }
@@ -376,7 +376,7 @@ export interface PollEntry {
   tgOrigPollMsgId?: number;    // TG message_id of the user's original poll (to stopPoll on lock)
   tgPollUUID:       string;    // TG poll identifier from ctx.pollAnswer.poll_id
   tgScoreMsgId:     number;    // TG message_id of the editable vote-count text below
-  tgThreadId:       number;    // Forum thread (topic) id
+  tgThreadId?:      number;    // Forum thread (topic) id, absent for regular groups
   options: {
     option_id: number;
     content:   string;

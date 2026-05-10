@@ -505,10 +505,14 @@ export function setupTelegramHandler(
       // Only handle messages from our bridge group
       if (ctx.chat.id !== config.telegram.groupId) return;
 
-      // Must originate from a topic (all bridged conversations live in topics)
+      // Prefer forum-topic routing. In regular groups, route replies to bridged
+      // messages by looking up the saved Zalo quote metadata.
       const topicId =
         'message_thread_id' in msg ? (msg.message_thread_id as number | undefined) : undefined;
-      if (!topicId) return;
+      const replyToMsgId = 'reply_to_message' in msg
+        ? msg.reply_to_message?.message_id
+        : undefined;
+      const replyQuote = replyToMsgId !== undefined ? msgStore.getQuote(replyToMsgId) : undefined;
 
       // Zalo not connected yet
       if (!currentApi) {
@@ -520,15 +524,15 @@ export function setupTelegramHandler(
       const api = currentApi;
 
       // Look up the corresponding Zalo conversation
-      const entry = store.getEntryByTopic(topicId);
-      if (!entry) {
+      const entry = topicId !== undefined ? store.getEntryByTopic(topicId) : undefined;
+      if (!entry && !replyQuote) {
         console.warn(`[TG→Zalo] No Zalo mapping for topicId=${topicId}`);
         return;
       }
 
-      const { zaloId } = entry;
+      const zaloId = entry?.zaloId ?? replyQuote!.zaloId;
       // Ensure numeric value is correctly mapped to ThreadType enum at runtime
-      const threadType: ThreadType = entry.type === 1 ? ThreadType.Group : ThreadType.User;
+      const threadType: ThreadType = (entry?.type ?? replyQuote!.threadType) === 1 ? ThreadType.Group : ThreadType.User;
 
       // Helper: send TG error notification back to the same topic
       const notifyError = async (action: string, err: unknown) => {
@@ -550,7 +554,7 @@ export function setupTelegramHandler(
           .sendMessage(
             config.telegram.groupId,
             `⚠️ Gửi thất bại: <b>${action}</b>\n<code>${errMsg}${code != null ? ` (code ${code})` : ''}</code>${hint}`,
-            { message_thread_id: topicId, parse_mode: 'HTML' },
+            { ...(topicId !== undefined ? { message_thread_id: topicId } : {}), parse_mode: 'HTML' },
           )
           .catch(() => undefined);
       };
@@ -559,9 +563,7 @@ export function setupTelegramHandler(
         // Skip bot commands that were already handled above
         if (msg.text.startsWith('/')) return;
         console.log(`[TG→Zalo] sendMessage → zaloId=${zaloId} type=${threadType} text="${msg.text.slice(0, 80)}"`);
-        // Look up Zalo quote data if this TG message is a reply
-        const replyToMsgId = msg.reply_to_message?.message_id;
-        const zaloQuote = replyToMsgId !== undefined ? msgStore.getQuote(replyToMsgId) : undefined;
+        const zaloQuote = replyQuote;
 
         const zaloMentions = resolveTgMentions(
           msg.text,
@@ -711,7 +713,7 @@ export function setupTelegramHandler(
       // Helper: flush a media group — download all files and send as single Zalo message
       const flushMediaGroup = async (
         items: import('../store.js').MediaGroupItem[],
-        meta: { topicId: number; zaloId: string; threadType: 0 | 1; replyToMsgId?: number },
+        meta: { topicId?: number; zaloId: string; threadType: 0 | 1; replyToMsgId?: number },
       ) => {
         const replyMsgId = meta.replyToMsgId;
         const zaloQuote = replyMsgId !== undefined ? msgStore.getQuote(replyMsgId) : undefined;
@@ -761,7 +763,7 @@ export function setupTelegramHandler(
           mediaGroupStore.add(
             mediaGroupId,
             { fileId: photo.file_id, fname: 'photo.jpg', fileSize: photo.file_size, caption: cap, captionMentions: capMentions },
-            { topicId, zaloId, threadType: entry.type, replyToMsgId },
+            { topicId, zaloId, threadType: threadType === ThreadType.Group ? 1 : 0, replyToMsgId },
             (items, meta) => { void flushMediaGroup(items, meta); },
           );
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -797,7 +799,7 @@ export function setupTelegramHandler(
           mediaGroupStore.add(
             mediaGroupId,
             { fileId: vid.file_id, fname, fileSize: vid.file_size, caption: cap, captionMentions: capMentions },
-            { topicId, zaloId, threadType: entry.type, replyToMsgId },
+            { topicId, zaloId, threadType: threadType === ThreadType.Group ? 1 : 0, replyToMsgId },
             (items, meta) => { void flushMediaGroup(items, meta); },
           );
           return;
@@ -1129,4 +1131,3 @@ export function setupTelegramHandler(
 }
 
 // Called by setupTelegramHandler, but defined after so we can reference tgBot directly.
-
