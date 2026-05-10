@@ -1,7 +1,11 @@
 .env
+node_modules/
+dist/
 .venv/
 __pycache__/
 *.pyc
+credentials.json
+data/topics.json
 credentials/service_account.json
 /tmp/zalo_reminder_profile/
 .tmp/
@@ -15,3 +19,4 @@ qr_code.png
 .dolt/
 *.db
 .beads-credential-key
+.gitnexus

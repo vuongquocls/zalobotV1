@@ -3,8 +3,8 @@ module.exports = {
     {
       name: "zalo-bot",
       cwd: __dirname,
-      script: "zalo_bot.py",
-      interpreter: `${__dirname}/.venv/bin/python`,
+      script: "dist/index.js",
+      interpreter: "node",
       exec_mode: "fork",
       instances: 1,
       autorestart: true,
@@ -18,10 +18,6 @@ module.exports = {
       error_file: `${__dirname}/runtime-logs/zalo-bot-error.log`,
       env: {
         TZ: "Asia/Ho_Chi_Minh",
-        BOT_TIMEZONE: "Asia/Ho_Chi_Minh",
-        DISPLAY: ":99",
-        HEADLESS: "false",
-        PYTHONUNBUFFERED: "1",
         APP_BUILD_ID: process.env.APP_BUILD_ID || "unknown",
       },
     },

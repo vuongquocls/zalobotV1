@@ -1,11 +1,11 @@
 module.exports = {
     apps: [{
         name: 'zalo-bot',
-        script: 'zalo_bot.py',
-        interpreter: '/root/zalobotV1/.venv/bin/python3',
+        script: 'dist/index.js',
+        interpreter: 'node',
         cwd: '/root/zalobotV1',
         env: {
-            DISPLAY: ':99'
+            TZ: 'Asia/Ho_Chi_Minh'
         },
         max_restarts: 10,
         restart_delay: 5000
