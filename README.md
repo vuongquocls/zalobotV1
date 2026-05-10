@@ -64,7 +64,7 @@ npm start
 Hoac dung PM2:
 
 ```bash
-pm2 start pm2_zalo_bot.config.js --only zalo-bot --update-env
+pm2 start pm2_zalo_bot.config.cjs --only zalo-bot --update-env
 ```
 
 ## Lenh Telegram

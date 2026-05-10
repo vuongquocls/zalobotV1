@@ -28,7 +28,7 @@ echo "Crontab updated."
 
 echo "=== 3/4 Khoi dong bot bang PM2 ==="
 pm2 delete zalo-bot 2>/dev/null
-pm2 start pm2_zalo_bot.config.js --only zalo-bot --update-env
+pm2 start pm2_zalo_bot.config.cjs --only zalo-bot --update-env
 pm2 save
 
 echo ""

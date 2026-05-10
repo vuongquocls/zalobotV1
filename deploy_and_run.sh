@@ -35,7 +35,7 @@ cd "$PROJECT_DIR"
 require_file "$PROJECT_DIR/package.json" "package.json"
 require_file "$PROJECT_DIR/package-lock.json" "package-lock.json"
 require_file "$PROJECT_DIR/tsconfig.json" "tsconfig.json"
-require_file "$PROJECT_DIR/pm2_zalo_bot.config.js" "pm2_zalo_bot.config.js"
+require_file "$PROJECT_DIR/pm2_zalo_bot.config.cjs" "pm2_zalo_bot.config.cjs"
 
 require_cmd node
 require_cmd npm
@@ -57,7 +57,7 @@ export TZ="${TZ:-Asia/Ho_Chi_Minh}"
 
 log "Starting clean pm2 app: $PM2_APP_NAME (build ${BUILD_ID})"
 pm2 delete "$PM2_APP_NAME" >/dev/null 2>&1 || true
-pm2 start "$PROJECT_DIR/pm2_zalo_bot.config.js" --only "$PM2_APP_NAME" --update-env
+pm2 start "$PROJECT_DIR/pm2_zalo_bot.config.cjs" --only "$PM2_APP_NAME" --update-env
 pm2 save
 
 log "PM2 status"

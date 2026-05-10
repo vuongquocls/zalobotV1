@@ -58,14 +58,16 @@ if [[ -z "$PROC_INFO" ]]; then
   exit 0
 fi
 
-mapfile -t PROC_LINES <<<"$PROC_INFO"
-PROC_NAME="${PROC_LINES[0]:-zalo-bot}"
-PROC_STATUS="${PROC_LINES[1]:-unknown}"
-PROC_PID="${PROC_LINES[2]:-0}"
-PROC_SCRIPT="${PROC_LINES[3]:-}"
-PROC_CWD="${PROC_LINES[4]:-}"
-PROC_INTERPRETER="${PROC_LINES[5]:-}"
-PROC_BUILD_ID="${PROC_LINES[6]:-}"
+PROC_NAME="$(printf '%s\n' "$PROC_INFO" | sed -n '1p')"
+PROC_STATUS="$(printf '%s\n' "$PROC_INFO" | sed -n '2p')"
+PROC_PID="$(printf '%s\n' "$PROC_INFO" | sed -n '3p')"
+PROC_SCRIPT="$(printf '%s\n' "$PROC_INFO" | sed -n '4p')"
+PROC_CWD="$(printf '%s\n' "$PROC_INFO" | sed -n '5p')"
+PROC_INTERPRETER="$(printf '%s\n' "$PROC_INFO" | sed -n '6p')"
+PROC_BUILD_ID="$(printf '%s\n' "$PROC_INFO" | sed -n '7p')"
+PROC_NAME="${PROC_NAME:-zalo-bot}"
+PROC_STATUS="${PROC_STATUS:-unknown}"
+PROC_PID="${PROC_PID:-0}"
 
 TMP_LOG="$(mktemp)"
 cleanup() {
@@ -106,6 +108,9 @@ if [[ "$PROC_STATUS" != "online" ]]; then
 elif (( LAST_MISSING_TG_TOKEN > 0 || LAST_MISSING_TG_GROUP > 0 )); then
   CONCLUSION="bot thiếu cấu hình Telegram"
   DETAIL="thiếu TG_TOKEN hoặc TG_GROUP_ID trong .env"
+elif (( LAST_ZALO_STARTED > 0 )); then
+  CONCLUSION="bot đang chạy tốt"
+  DETAIL="Telegram đã chạy, Zalo listener đã khởi động"
 elif (( LAST_BRIDGE_RUNNING == 0 && LAST_TG_STARTED == 0 )); then
   CONCLUSION="bot đang chạy nhưng chưa có log của bản mới"
   DETAIL="không thấy marker Bridge is running hoặc Telegram bot started"
