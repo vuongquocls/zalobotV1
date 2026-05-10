@@ -1,44 +1,29 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# Script cài đặt Zalo Bot trên VPS Ubuntu
-# Hướng dẫn:
-# 1. Upload thư mục code lên VPS
-# 2. Chạy lệnh: bash setup_vps.sh
+# Script cai dat Zalo Telegram Bridge tren VPS Ubuntu.
 
-echo "🚀 Bắt đầu cài đặt Zalo Bot..."
-
-PLAYWRIGHT_BROWSER="${PLAYWRIGHT_BROWSER:-chromium}"
+echo "Bat dau cai dat Zalo Telegram Bridge..."
 
 # Cập nhật hệ thống
 sudo apt update && sudo apt upgrade -y
 
-# Cài đặt Python và Pip
-sudo apt install python3-pip python3-venv -y
-
-# Cài đặt Node.js và PM2 (để chạy bot ngầm)
+# Cài đặt Node.js và PM2.
 curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
 sudo apt install -y nodejs
 sudo npm install -g pm2
 
-# Tạo môi trường ảo và cài đặt dependencies
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+npm ci
+npm run build
 
-# Cài đặt trình duyệt cho Playwright (cần sudo để cài system deps)
-playwright install "$PLAYWRIGHT_BROWSER"
-sudo playwright install-deps "$PLAYWRIGHT_BROWSER"
-
-echo "✅ Cài đặt hoàn tất!"
+echo "Cai dat hoan tat."
 echo "------------------------------------------------"
-echo "Để chạy bot lần đầu (cần quét QR):"
-echo "1. Đảm bảo file .env đã chính xác"
-echo "2. Chạy lệnh: source .venv/bin/activate && python3 zalo_bot.py"
-echo "3. Copy file qr_code.png ra ngoài để quét mã"
+echo "1. Tao file .env voi TG_TOKEN va TG_GROUP_ID."
+echo "2. Chay: npm run dev"
+echo "3. Neu chua dang nhap Zalo, gui /login trong Telegram group de quet QR."
 echo ""
-echo "Để chạy bot ổn định 24/7 bằng PM2:"
-echo "pm2 start \"source .venv/bin/activate && python3 zalo_bot.py\" --name zalo-bot"
+echo "Chay on dinh 24/7 bang PM2:"
+echo "pm2 start pm2_zalo_bot.config.js --only zalo-bot --update-env"
 echo "pm2 save"
 echo "pm2 startup"
 echo "------------------------------------------------"

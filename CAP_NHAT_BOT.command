@@ -5,7 +5,6 @@ VPS_USER="root"
 VPS_HOST="103.72.56.225"
 REMOTE_DIR="/root/zalobotV1"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLAYWRIGHT_BROWSER="${PLAYWRIGHT_BROWSER:-chromium}"
 SSH_OPTS="-o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new"
 
 log() {
@@ -62,9 +61,6 @@ echo "[REMOTE] Dang o thu muc: $REMOTE_DIR"
 git fetch origin
 git checkout "$CURRENT_BRANCH"
 git pull --ff-only origin "$CURRENT_BRANCH"
-export PLAYWRIGHT_BROWSER="$PLAYWRIGHT_BROWSER"
-export DISPLAY_VALUE=:99
-export HEADLESS_VALUE=false
 bash ./deploy_and_run.sh
 echo ""
 echo "[REMOTE] Kiem tra nhanh tinh trang bot"

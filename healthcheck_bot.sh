@@ -67,11 +67,6 @@ PROC_CWD="${PROC_LINES[4]:-}"
 PROC_INTERPRETER="${PROC_LINES[5]:-}"
 PROC_BUILD_ID="${PROC_LINES[6]:-}"
 
-PORT_6080_STATUS="down"
-if curl -fsI --max-time 5 "http://127.0.0.1:6080/vnc.html" >/dev/null 2>&1; then
-  PORT_6080_STATUS="up"
-fi
-
 TMP_LOG="$(mktemp)"
 cleanup() {
   rm -f "$TMP_LOG"
@@ -94,30 +89,32 @@ find_last_line() {
   fi
 }
 
-LAST_SESSION_READY="$(find_last_line 'session.ready')"
-LAST_LOGIN_REQUIRED="$(find_last_line 'session.login_required')"
-LAST_SIDEBAR_SCAN="$(find_last_line 'sidebar.scan')"
-LAST_UNREAD_DETECTED="$(find_last_line 'unread.detected')"
-LAST_CHAT_INSPECT="$(find_last_line 'chat.inspect')"
-LAST_REPLY_SUCCESS="$(find_last_line 'reply.success')"
-LAST_REPLY_ERROR="$(find_last_line 'reply.error')"
-LAST_BOT_START="$(find_last_line 'bot.start')"
+LAST_BRIDGE_RUNNING="$(find_last_line 'Bridge is running')"
+LAST_TG_STARTED="$(find_last_line 'Telegram bot started')"
+LAST_ZALO_STARTED="$(find_last_line 'Zalo listener started')"
+LAST_ZALO_AUTO_LOGIN_FAILED="$(find_last_line 'Zalo auto-login failed')"
+LAST_MISSING_TG_TOKEN="$(find_last_line 'Missing required environment variable: TG_TOKEN')"
+LAST_MISSING_TG_GROUP="$(find_last_line 'Missing required environment variable: TG_GROUP_ID')"
+LAST_FATAL="$(find_last_line 'Fatal error')"
 
 CONCLUSION="bot đang chạy tốt"
-DETAIL="process online, port 6080=${PORT_6080_STATUS}"
+DETAIL="process online"
 
 if [[ "$PROC_STATUS" != "online" ]]; then
   CONCLUSION="bot chưa chạy"
   DETAIL="pm2 status=${PROC_STATUS}, pid=${PROC_PID}"
-elif (( LAST_BOT_START == 0 )); then
+elif (( LAST_MISSING_TG_TOKEN > 0 || LAST_MISSING_TG_GROUP > 0 )); then
+  CONCLUSION="bot thiếu cấu hình Telegram"
+  DETAIL="thiếu TG_TOKEN hoặc TG_GROUP_ID trong .env"
+elif (( LAST_BRIDGE_RUNNING == 0 && LAST_TG_STARTED == 0 )); then
   CONCLUSION="bot đang chạy nhưng chưa có log của bản mới"
-  DETAIL="không thấy marker bot.start trong log gần nhất"
-elif (( LAST_LOGIN_REQUIRED > LAST_SESSION_READY )); then
-  CONCLUSION="bot đang chạy nhưng cần quét QR"
-  DETAIL="log mới nhất nghiêng về session.login_required"
-elif (( LAST_REPLY_ERROR > LAST_REPLY_SUCCESS )); then
-  CONCLUSION="bot đang lỗi gửi reply"
-  DETAIL="reply.error xuất hiện sau reply.success trong log gần nhất"
+  DETAIL="không thấy marker Bridge is running hoặc Telegram bot started"
+elif (( LAST_ZALO_AUTO_LOGIN_FAILED > LAST_ZALO_STARTED )); then
+  CONCLUSION="bot Telegram đã chạy, Zalo cần đăng nhập"
+  DETAIL="gửi /login trong Telegram group để quét QR Zalo"
+elif (( LAST_FATAL > LAST_BRIDGE_RUNNING )); then
+  CONCLUSION="bot có lỗi fatal sau khi khởi động"
+  DETAIL="xem log err để lấy stack trace"
 fi
 
 echo "Kết luận: ${CONCLUSION}"
@@ -130,14 +127,12 @@ echo "PM2 cwd: ${PROC_CWD}"
 echo "PM2 interpreter: ${PROC_INTERPRETER}"
 echo "PM2 build_id: ${PROC_BUILD_ID}"
 echo "Project dir: ${PROJECT_DIR}"
-echo "Port 6080: ${PORT_6080_STATUS}"
 echo "Log out: ${OUT_LOG}"
 echo "Log err: ${ERR_LOG}"
-echo "Marker bot.start: ${LAST_BOT_START}"
-echo "Marker session.ready: ${LAST_SESSION_READY}"
-echo "Marker session.login_required: ${LAST_LOGIN_REQUIRED}"
-echo "Marker sidebar.scan: ${LAST_SIDEBAR_SCAN}"
-echo "Marker unread.detected: ${LAST_UNREAD_DETECTED}"
-echo "Marker chat.inspect: ${LAST_CHAT_INSPECT}"
-echo "Marker reply.success: ${LAST_REPLY_SUCCESS}"
-echo "Marker reply.error: ${LAST_REPLY_ERROR}"
+echo "Marker bridge.running: ${LAST_BRIDGE_RUNNING}"
+echo "Marker telegram.started: ${LAST_TG_STARTED}"
+echo "Marker zalo.started: ${LAST_ZALO_STARTED}"
+echo "Marker zalo.auto_login_failed: ${LAST_ZALO_AUTO_LOGIN_FAILED}"
+echo "Marker missing_tg_token: ${LAST_MISSING_TG_TOKEN}"
+echo "Marker missing_tg_group: ${LAST_MISSING_TG_GROUP}"
+echo "Marker fatal: ${LAST_FATAL}"
