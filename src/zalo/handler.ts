@@ -203,6 +203,29 @@ function buildScoreText(header: string, options: Pick<PollOptions, 'content' | '
 
 /** Track which groups already had their member cache populated this session. */
 const _memberCacheLoaded = new Set<string>();
+const RECENT_LINK_TTL_MS = 30 * 60 * 1000;
+const recentZaloLinks = new Map<string, { url: string; title?: string; createdAt: number }>();
+
+function saveRecentZaloLink(zaloId: string, url: string, title?: string): void {
+  recentZaloLinks.set(zaloId, { url, title, createdAt: Date.now() });
+}
+
+function withRecentZaloLinkContext(zaloId: string, body: string): string {
+  if (/https?:\/\//i.test(body)) return body;
+  const recent = recentZaloLinks.get(zaloId);
+  if (!recent) return body;
+  if (Date.now() - recent.createdAt > RECENT_LINK_TTL_MS) {
+    recentZaloLinks.delete(zaloId);
+    return body;
+  }
+  return [
+    body,
+    '',
+    '[Ngữ cảnh link Zalo vừa gửi trước đó]',
+    `URL: ${recent.url}`,
+    recent.title ? `Tiêu đề: ${recent.title}` : '',
+  ].filter(Boolean).join('\n');
+}
 
 export function setupZaloHandler(api: ZaloAPI): void {
   // Pre-populate userCache for all existing group topics on startup
@@ -317,6 +340,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
         const hermesRoute = shouldRouteZaloTextToHermes(body, type);
         console.log(`[Hermes] route_check type=${type} route=${hermesRoute.route} alias=${hermesRoute.invokedByAlias} sender="${senderName}" chat="${displayName}" text="${truncate(body, 120)}"`);
         if (hermesRoute.route) {
+          const hermesBody = withRecentZaloLinkContext(zaloId, body);
           const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
           let decision: Awaited<ReturnType<typeof decideWithHermes>>;
           try {
@@ -326,7 +350,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
               chat: { id: zaloId, type, name: displayName },
               sender: { id: msg.data.uidFrom, name: senderName },
               message: {
-                text: body,
+                text: hermesBody,
                 msgId: msg.data.msgId,
                 timestamp: msg.data.ts,
               },
@@ -356,7 +380,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
               config.telegram.approvalGroupId,
               formatHermesAuditLog(
                 '🧠 Hermes đã tự trả lời Zalo',
-                `Nơi nhận: ${displayName}\nNgười hỏi: ${senderName}\nTin hỏi: ${body}\n\nTrả lời:\n${decision.replyText.trim()}`,
+                `Nơi nhận: ${displayName}\nNgười hỏi: ${senderName}\nTin hỏi: ${hermesBody}\n\nTrả lời:\n${decision.replyText.trim()}`,
               ),
               { parse_mode: 'HTML' },
             ).catch(() => undefined);
@@ -373,7 +397,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
               chatName: displayName,
               senderId: msg.data.uidFrom,
               senderName,
-              originalText: body,
+              originalText: hermesBody,
               replyText: decision.replyText.trim(),
               reason: decision.reason ?? decision.approvalPrompt,
               createdAt: new Date().toISOString(),
@@ -665,10 +689,70 @@ ${escapeHtml(photoCaption)}`
 
       // ── 8. Link ────────────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.LINK) {
-        const { tgBase, saveTgMapping } = await getBridgeContext();
         const href  = media.href;
         const title = media.title ?? href;
         if (!href) return;
+        saveRecentZaloLink(zaloId, href, title);
+
+        if (type === ThreadType.User) {
+          const body = [
+            'Anh Quốc vừa gửi một link Zalo:',
+            `URL: ${href}`,
+            title ? `Tiêu đề: ${title}` : '',
+            media.description ? `Mô tả: ${media.description}` : '',
+            'Hãy đọc nội dung công khai từ link này nếu truy cập được, rồi phản hồi ngắn gọn là em đọc được gì.',
+          ].filter(Boolean).join('\n');
+          const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+          try {
+            const decision = await decideWithHermes({
+              requestId,
+              channel: 'zalo',
+              chat: { id: zaloId, type, name: displayName },
+              sender: { id: msg.data.uidFrom, name: senderName },
+              message: {
+                text: body,
+                msgId: msg.data.msgId,
+                timestamp: msg.data.ts,
+              },
+              routing: { isDirectChat: true, invokedByAlias: true },
+            });
+            if (decision.decision === 'auto_reply' && decision.replyText?.trim()) {
+              await api.sendMessage({ msg: decision.replyText.trim() }, zaloId, ThreadType.User);
+              console.log(`[Hermes] link auto_reply sent to Zalo requestId=${decision.requestId ?? requestId}`);
+              return;
+            }
+            if (decision.decision === 'needs_approval' && decision.replyText?.trim()) {
+              const approvalId = `ha_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+              const approval = {
+                approvalId,
+                requestId: decision.requestId ?? requestId,
+                zaloId,
+                threadType: type,
+                chatName: displayName,
+                senderId: msg.data.uidFrom,
+                senderName,
+                originalText: body,
+                replyText: decision.replyText.trim(),
+                reason: decision.reason ?? decision.approvalPrompt,
+                createdAt: new Date().toISOString(),
+              };
+              hermesApprovalStore.save(approval);
+              const sent = await sendHermesApprovalRequest(approval);
+              hermesApprovalStore.save({ ...approval, telegramMessageId: sent.messageId });
+              return;
+            }
+          } catch (hermesErr) {
+            console.error(`[Hermes] link decision failed requestId=${requestId}:`, hermesErr);
+            await api.sendMessage(
+              { msg: 'Em đã nhận link nhưng đang lỗi khi đọc nội dung. Anh thử gửi lại hoặc nói rõ anh muốn em xem phần nào nhé.' },
+              zaloId,
+              ThreadType.User,
+            );
+            return;
+          }
+        }
+
+        const { tgBase, saveTgMapping } = await getBridgeContext();
         const linkText = type === ThreadType.Group
           ? `${groupCaption(senderName)}\n<a href="${href}">${title}</a>`
           : `<a href="${href}">${title}</a>`;
