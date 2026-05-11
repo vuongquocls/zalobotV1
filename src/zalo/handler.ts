@@ -2,6 +2,7 @@ import { ThreadType } from 'zca-js';
 import { createReadStream } from 'fs';
 import path from 'path';
 import QRCode from 'qrcode';
+import { randomUUID } from 'crypto';
 
 import type { ZaloAPI, ZaloMessage, ZaloMediaContent, ZaloGroupInfoResponse } from './types.js';
 import { ZALO_MSG_TYPES } from './types.js';
@@ -11,6 +12,10 @@ import { config } from '../config.js';
 import { downloadToTemp, cleanTemp } from '../utils/media.js';
 import { applyMentionsHtml, formatGroupMsgHtml, formatGroupMsg, groupCaption, topicName, truncate, escapeHtml } from '../utils/format.js';
 import { msgStore, userCache, pollStore, sentMsgStore, zaloAlbumStore, type ZaloQuoteData } from '../store.js';
+import { decideWithHermes } from '../hermes/connector.js';
+import { shouldRouteZaloTextToHermes } from '../hermes/routing.js';
+import { hermesApprovalStore } from '../hermes/approvalStore.js';
+import { formatHermesApprovalMessage, formatHermesAuditLog } from '../hermes/format.js';
 
 let telegramForumUnavailable = false;
 
@@ -287,6 +292,86 @@ export function setupZaloHandler(api: ZaloAPI): void {
       if (msgType === ZALO_MSG_TYPES.TEXT || (text !== null)) {
         const body = text ?? (typeof msg.data.content === 'string' ? msg.data.content : '');
         if (!body.trim()) return;
+
+        const hermesRoute = shouldRouteZaloTextToHermes(body, type);
+        if (hermesRoute.route) {
+          const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+          const decision = await decideWithHermes({
+            requestId,
+            channel: 'zalo',
+            chat: { id: zaloId, type, name: displayName },
+            sender: { id: msg.data.uidFrom, name: senderName },
+            message: {
+              text: body,
+              msgId: msg.data.msgId,
+              timestamp: msg.data.ts,
+            },
+            routing: {
+              isDirectChat: type === ThreadType.User,
+              invokedByAlias: hermesRoute.invokedByAlias,
+            },
+          });
+
+          if (decision.decision === 'auto_reply' && decision.replyText?.trim()) {
+            const zaloThreadType = type === ThreadType.Group ? ThreadType.Group : ThreadType.User;
+            await api.sendMessage({ msg: decision.replyText.trim() }, zaloId, zaloThreadType);
+            console.log(`[Hermes] auto_reply sent to Zalo requestId=${decision.requestId ?? requestId}`);
+            await tgBot.telegram.sendMessage(
+              config.telegram.approvalGroupId,
+              formatHermesAuditLog(
+                '🧠 Hermes đã tự trả lời Zalo',
+                `Nơi nhận: ${displayName}\nNgười hỏi: ${senderName}\nTin hỏi: ${body}\n\nTrả lời:\n${decision.replyText.trim()}`,
+              ),
+              { parse_mode: 'HTML' },
+            ).catch(() => undefined);
+            return;
+          }
+
+          if (decision.decision === 'needs_approval' && decision.replyText?.trim()) {
+            const approvalId = `ha_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+            const approval = {
+              approvalId,
+              requestId: decision.requestId ?? requestId,
+              zaloId,
+              threadType: type,
+              chatName: displayName,
+              senderId: msg.data.uidFrom,
+              senderName,
+              originalText: body,
+              replyText: decision.replyText.trim(),
+              reason: decision.reason ?? decision.approvalPrompt,
+              createdAt: new Date().toISOString(),
+            };
+            hermesApprovalStore.save(approval);
+            try {
+              const sent = await tgBot.telegram.sendMessage(
+                config.telegram.approvalGroupId,
+                formatHermesApprovalMessage(approval),
+                {
+                  parse_mode: 'HTML',
+                  reply_markup: {
+                    inline_keyboard: [[
+                      { text: '✅ Duyệt gửi Zalo', callback_data: `ha:a:${approvalId}` },
+                      { text: '❌ Từ chối', callback_data: `ha:r:${approvalId}` },
+                    ]],
+                  },
+                },
+              );
+              hermesApprovalStore.save({ ...approval, telegramMessageId: sent.message_id });
+              console.log(`[Hermes] approval requested approvalId=${approvalId} requestId=${approval.requestId}`);
+              return;
+            } catch (approvalErr) {
+              hermesApprovalStore.remove(approvalId);
+              console.warn('[Hermes] Failed to send approval request, falling back to Telegram passthrough:', approvalErr);
+            }
+          }
+
+          if (decision.decision === 'ignore') {
+            console.log(`[Hermes] ignored Zalo message requestId=${decision.requestId ?? requestId}`);
+            return;
+          }
+        }
+
         const mentions = msg.data.mentions;
         const bodyHtml = mentions?.length
           ? applyMentionsHtml(truncate(body), mentions)

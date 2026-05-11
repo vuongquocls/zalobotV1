@@ -8,6 +8,8 @@ import { tgBot } from './bot.js';
 import { config } from '../config.js';
 import { downloadToTemp, cleanTemp, convertToM4a } from '../utils/media.js';
 import { triggerQRLogin } from '../zalo/client.js';
+import { hermesApprovalStore } from '../hermes/approvalStore.js';
+import { escapeHtml } from '../utils/format.js';
 
 // ── Mention resolution helper ──────────────────────────────────────────────
 
@@ -346,6 +348,72 @@ export function setupTelegramHandler(
         console.error('[TG→Zalo] lock_poll callback error:', err);
         try { await ctx.answerCbQuery('❌ Lỗi khoá bình chọn'); } catch { /* ignore */ }
       }
+      return;
+    }
+
+    if (data?.startsWith('ha:')) {
+      const [, action, approvalId] = data.split(':');
+      const fromId = String(ctx.callbackQuery.from.id);
+      const approvers = config.telegram.approverUserIds;
+      if (approvers.length > 0 && !approvers.includes(fromId)) {
+        await ctx.answerCbQuery('⛔ Anh không có quyền duyệt lệnh này.');
+        return;
+      }
+
+      const entry = approvalId ? hermesApprovalStore.get(approvalId) : undefined;
+      if (!entry) {
+        await ctx.answerCbQuery('❌ Không tìm thấy bản duyệt này.');
+        return;
+      }
+
+      if (action === 'r') {
+        hermesApprovalStore.remove(entry.approvalId);
+        await ctx.answerCbQuery('Đã từ chối');
+        await ctx.editMessageText(
+          `❌ <b>Đã từ chối trả lời Zalo</b>\n\n<b>Mã:</b> <code>${escapeHtml(entry.approvalId)}</code>\n<b>Nơi nhận:</b> ${escapeHtml(entry.chatName)}\n<b>Người hỏi:</b> ${escapeHtml(entry.senderName)}`,
+          { parse_mode: 'HTML' },
+        ).catch(() => undefined);
+        return;
+      }
+
+      if (action === 'a') {
+        if (!currentApi) {
+          await ctx.answerCbQuery('❌ Zalo chưa kết nối');
+          return;
+        }
+
+        try {
+          const { ThreadType } = await import('zca-js');
+          const zaloThreadType = entry.threadType === 1 ? ThreadType.Group : ThreadType.User;
+          const sendResult = await currentApi.sendMessage(
+            { msg: entry.replyText },
+            entry.zaloId,
+            zaloThreadType,
+          ) as { message?: { msgId?: number } } | undefined;
+
+          const callbackMessage = 'message' in ctx.callbackQuery ? ctx.callbackQuery.message : undefined;
+          const tgMessageId = callbackMessage && 'message_id' in callbackMessage
+            ? callbackMessage.message_id
+            : entry.telegramMessageId;
+          const zaloMsgId = sendResult?.message?.msgId;
+          if (tgMessageId !== undefined && zaloMsgId !== undefined) {
+            sentMsgStore.save(tgMessageId, { msgId: zaloMsgId, zaloId: entry.zaloId, threadType: entry.threadType });
+          }
+
+          hermesApprovalStore.remove(entry.approvalId);
+          await ctx.answerCbQuery('✅ Đã gửi qua Zalo');
+          await ctx.editMessageText(
+            `✅ <b>Đã duyệt và gửi qua Zalo</b>\n\n<b>Mã:</b> <code>${escapeHtml(entry.approvalId)}</code>\n<b>Nơi nhận:</b> ${escapeHtml(entry.chatName)}\n<b>Người hỏi:</b> ${escapeHtml(entry.senderName)}\n\n<b>Nội dung đã gửi:</b>\n${escapeHtml(entry.replyText)}`,
+            { parse_mode: 'HTML' },
+          ).catch(() => undefined);
+        } catch (err) {
+          console.error('[Hermes] approve callback failed:', err);
+          await ctx.answerCbQuery('❌ Gửi Zalo thất bại');
+        }
+        return;
+      }
+
+      await ctx.answerCbQuery('❌ Thao tác không hợp lệ');
       return;
     }
 
