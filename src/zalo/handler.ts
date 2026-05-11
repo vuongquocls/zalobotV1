@@ -241,32 +241,6 @@ export function setupZaloHandler(api: ZaloAPI): void {
         } catch { /* non-fatal */ }
       }
 
-      const topicId = await getOrCreateTopic(zaloId, type, displayName, groupAvatarUrl);
-
-      // Resolve Telegram reply target from incoming Zalo quote (if any)
-      let tgReplyMsgId: number | undefined;
-      if (msg.data.quote) {
-        const globalId = String(msg.data.quote.globalMsgId);
-        // Primary: messages received from Zalo and forwarded to TG
-        // Fallback: messages we sent from TG to Zalo (reverse lookup)
-        tgReplyMsgId = msgStore.getTgMsgId(globalId) ?? sentMsgStore.getByZaloMsgId(globalId);
-      }
-
-      // Base TG send options (with optional reply_parameters)
-      const tgBase: {
-        message_thread_id?: number;
-        reply_parameters?: { message_id: number; allow_sending_without_reply: boolean };
-      } = {};
-      if (topicId !== undefined) {
-        tgBase.message_thread_id = topicId;
-      }
-      if (tgReplyMsgId !== undefined) {
-        tgBase.reply_parameters = { message_id: tgReplyMsgId, allow_sending_without_reply: true };
-      }
-
-      const caption = type === ThreadType.Group ? groupCaption(senderName) : undefined;
-      const tgOpts  = { ...tgBase, parse_mode: 'HTML' as const, caption };
-
       // Build quote data + mapping helper — saved after every successful TG send
       const zaloMsgIds = msg.data.realMsgId && msg.data.realMsgId !== msg.data.msgId
         ? [msg.data.msgId, msg.data.realMsgId]
@@ -282,11 +256,57 @@ export function setupZaloHandler(api: ZaloAPI): void {
         zaloId,
         threadType: type,
       };
-      const saveTgMapping = (sent: { message_id: number }) => {
-        msgStore.save(sent.message_id, zaloMsgIds, zaloQuoteData);
-      };
 
       const { text, media } = parseContent(msg.data.content);
+
+      let bridgeContext: {
+        topicId: number | undefined;
+        tgBase: {
+          message_thread_id?: number;
+          reply_parameters?: { message_id: number; allow_sending_without_reply: boolean };
+        };
+        tgOpts: {
+          parse_mode: 'HTML';
+          caption?: string;
+          message_thread_id?: number;
+          reply_parameters?: { message_id: number; allow_sending_without_reply: boolean };
+        };
+        saveTgMapping: (sent: { message_id: number }) => void;
+      } | null = null;
+
+      const getBridgeContext = async () => {
+        if (bridgeContext) return bridgeContext;
+
+        const topicId = await getOrCreateTopic(zaloId, type, displayName, groupAvatarUrl);
+
+        let tgReplyMsgId: number | undefined;
+        if (msg.data.quote) {
+          const globalId = String(msg.data.quote.globalMsgId);
+          // Primary: messages received from Zalo and forwarded to TG
+          // Fallback: messages we sent from TG to Zalo (reverse lookup)
+          tgReplyMsgId = msgStore.getTgMsgId(globalId) ?? sentMsgStore.getByZaloMsgId(globalId);
+        }
+
+        const tgBase: {
+          message_thread_id?: number;
+          reply_parameters?: { message_id: number; allow_sending_without_reply: boolean };
+        } = {};
+        if (topicId !== undefined) {
+          tgBase.message_thread_id = topicId;
+        }
+        if (tgReplyMsgId !== undefined) {
+          tgBase.reply_parameters = { message_id: tgReplyMsgId, allow_sending_without_reply: true };
+        }
+
+        const caption = type === ThreadType.Group ? groupCaption(senderName) : undefined;
+        const tgOpts = { ...tgBase, parse_mode: 'HTML' as const, caption };
+        const saveTgMapping = (sent: { message_id: number }) => {
+          msgStore.save(sent.message_id, zaloMsgIds, zaloQuoteData);
+        };
+
+        bridgeContext = { topicId, tgBase, tgOpts, saveTgMapping };
+        return bridgeContext;
+      };
 
       // ── 1. Plain text ──────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.TEXT || (text !== null)) {
@@ -294,23 +314,38 @@ export function setupZaloHandler(api: ZaloAPI): void {
         if (!body.trim()) return;
 
         const hermesRoute = shouldRouteZaloTextToHermes(body, type);
+        console.log(`[Hermes] route_check type=${type} route=${hermesRoute.route} alias=${hermesRoute.invokedByAlias} sender="${senderName}" chat="${displayName}" text="${truncate(body, 120)}"`);
         if (hermesRoute.route) {
           const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
-          const decision = await decideWithHermes({
-            requestId,
-            channel: 'zalo',
-            chat: { id: zaloId, type, name: displayName },
-            sender: { id: msg.data.uidFrom, name: senderName },
-            message: {
-              text: body,
-              msgId: msg.data.msgId,
-              timestamp: msg.data.ts,
-            },
-            routing: {
-              isDirectChat: type === ThreadType.User,
-              invokedByAlias: hermesRoute.invokedByAlias,
-            },
-          });
+          let decision: Awaited<ReturnType<typeof decideWithHermes>>;
+          try {
+            decision = await decideWithHermes({
+              requestId,
+              channel: 'zalo',
+              chat: { id: zaloId, type, name: displayName },
+              sender: { id: msg.data.uidFrom, name: senderName },
+              message: {
+                text: body,
+                msgId: msg.data.msgId,
+                timestamp: msg.data.ts,
+              },
+              routing: {
+                isDirectChat: type === ThreadType.User,
+                invokedByAlias: hermesRoute.invokedByAlias,
+              },
+            });
+          } catch (hermesErr) {
+            console.error(`[Hermes] decision failed requestId=${requestId}:`, hermesErr);
+            if (type === ThreadType.User) {
+              await api.sendMessage(
+                { msg: 'Em đã nhận tin nhưng đang lỗi kết nối Hermes. Anh thử nhắn lại giúp em sau ít phút nhé.' },
+                zaloId,
+                ThreadType.User,
+              );
+              return;
+            }
+            throw hermesErr;
+          }
 
           if (decision.decision === 'auto_reply' && decision.replyText?.trim()) {
             const zaloThreadType = type === ThreadType.Group ? ThreadType.Group : ThreadType.User;
@@ -362,7 +397,15 @@ export function setupZaloHandler(api: ZaloAPI): void {
               return;
             } catch (approvalErr) {
               hermesApprovalStore.remove(approvalId);
-              console.warn('[Hermes] Failed to send approval request, falling back to Telegram passthrough:', approvalErr);
+              console.warn('[Hermes] Failed to send approval request:', approvalErr);
+              if (type === ThreadType.User) {
+                await api.sendMessage(
+                  { msg: 'Em đã nhận tin này, nhưng nội dung cần anh Quốc duyệt và kênh duyệt Telegram đang lỗi. Em đã ghi nhận để xử lý lại.' },
+                  zaloId,
+                  ThreadType.User,
+                );
+                return;
+              }
             }
           }
 
@@ -372,6 +415,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
           }
         }
 
+        const { tgBase, saveTgMapping } = await getBridgeContext();
         const mentions = msg.data.mentions;
         const bodyHtml = mentions?.length
           ? applyMentionsHtml(truncate(body), mentions)
@@ -390,6 +434,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
 
       // ── 2. Photo / Image ───────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.PHOTO) {
+        const { topicId, tgBase } = await getBridgeContext();
         // prefer HD from params, fall back to href
         let url = media.href;
         if (media.params) {
@@ -500,6 +545,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 2b. Doodle (sketch/drawing) ────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.DOODLE) {
+        const { tgOpts, saveTgMapping } = await getBridgeContext();
         const url = media.href || media.thumb;
         if (!url) { console.warn('[ZaloHandler] Doodle: no URL'); return; }
         const localPath = await downloadToTemp(url, `doodle_${Date.now()}.jpg`);
@@ -513,6 +559,7 @@ ${escapeHtml(photoCaption)}`
 
 
       if (msgType === ZALO_MSG_TYPES.GIF) {
+        const { tgOpts, saveTgMapping } = await getBridgeContext();
         const url = media.href;
         if (!url) {
           console.warn('[ZaloHandler] GIF: no URL found in content:', media);
@@ -534,6 +581,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 4. File ────────────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.FILE) {
+        const { tgOpts, saveTgMapping } = await getBridgeContext();
         const url = media.href;
         // title holds the original filename (e.g. "report.pdf")
         const fileName = media.title ?? `file_${Date.now()}`;
@@ -556,6 +604,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 5. Video ───────────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.VIDEO) {
+        const { tgOpts, saveTgMapping } = await getBridgeContext();
         const url = media.href;
         if (!url) { console.warn('[ZaloHandler] Video: no URL found in content:', media); return; }
         const localPath = await downloadToTemp(url, `video_${Date.now()}.mp4`);
@@ -569,6 +618,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 6. Voice ───────────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.VOICE) {
+        const { tgOpts, saveTgMapping } = await getBridgeContext();
         const url = media.href;
         if (!url) { console.warn('[ZaloHandler] Voice: no URL found in content:', media); return; }
         const ext = path.extname(url.split('?')[0] ?? '').toLowerCase() || '.m4a';
@@ -583,6 +633,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 7. Sticker – fetch real URL via getStickersDetail ──────────────────
       if (msgType === ZALO_MSG_TYPES.STICKER) {
+        const { tgBase, tgOpts, saveTgMapping } = await getBridgeContext();
         const stickerId = media.id;
         if (!stickerId) {
           console.warn('[ZaloHandler] Sticker: no id in content:', media);
@@ -625,6 +676,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 8. Link ────────────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.LINK) {
+        const { tgBase, saveTgMapping } = await getBridgeContext();
         const href  = media.href;
         const title = media.title ?? href;
         if (!href) return;
@@ -642,6 +694,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 9. Web content (Zalo instant: bank card, mini app, etc.) ──────────
       if (msgType === ZALO_MSG_TYPES.WEBCONTENT) {
+        const { tgBase, saveTgMapping } = await getBridgeContext();
         // For bank cards: fetch HTML, parse data, send QR image + caption
         if (media.action === 'zinstant.bankcard' && media.params) {
           try {
@@ -714,6 +767,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 10. Location ───────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.LOCATION) {
+        const { tgBase, saveTgMapping } = await getBridgeContext();
         let lat: number | undefined;
         let lng: number | undefined;
         try {
@@ -752,6 +806,7 @@ ${escapeHtml(photoCaption)}`
 
       // ── 11. Poll ────────────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.POLL) {
+        const { topicId, tgBase, saveTgMapping } = await getBridgeContext();
         let pollId: number | undefined;
         let question = '';
         let isAnonymous = false;
@@ -891,6 +946,7 @@ ${escapeHtml(photoCaption)}`
       // Before fallback: detect contact card by content shape (contactUid field)
       // Zalo sends contact cards as msgType 'chat.forward' with contactUid in content
       {
+        const { tgBase, saveTgMapping } = await getBridgeContext();
         const rawContent = msg.data.content;
         const contactUid: string | undefined =
           (typeof rawContent === 'object' && rawContent !== null && 'contactUid' in rawContent)
@@ -943,6 +999,7 @@ ${escapeHtml(photoCaption)}`
       }
 
       console.log(`[ZaloHandler] Unhandled msgType="${msgType}" content:`, JSON.stringify(msg.data.content));
+      const { tgBase, saveTgMapping } = await getBridgeContext();
       const fallback = type === ThreadType.Group
         ? `${groupCaption(senderName)}\n<i>[${msgType}]</i>`
         : `<i>[${msgType}]</i>`;
