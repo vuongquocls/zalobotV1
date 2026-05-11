@@ -1,5 +1,6 @@
 import { ThreadType } from 'zca-js';
 import { createReadStream } from 'fs';
+import { readFile, stat } from 'fs/promises';
 import path from 'path';
 import QRCode from 'qrcode';
 import { randomUUID } from 'crypto';
@@ -17,6 +18,7 @@ import { shouldRouteZaloTextToHermes } from '../hermes/routing.js';
 import { hermesApprovalStore } from '../hermes/approvalStore.js';
 import { formatHermesAuditLog } from '../hermes/format.js';
 import { sendHermesApprovalRequest } from '../hermes/approvalDelivery.js';
+import type { HermesDecision, HermesZaloSourceFile } from '../hermes/types.js';
 
 let telegramForumUnavailable = false;
 
@@ -204,7 +206,10 @@ function buildScoreText(header: string, options: Pick<PollOptions, 'content' | '
 /** Track which groups already had their member cache populated this session. */
 const _memberCacheLoaded = new Set<string>();
 const RECENT_LINK_TTL_MS = 30 * 60 * 1000;
+const RECENT_FILE_TTL_MS = 30 * 60 * 1000;
+const MAX_HERMES_FILE_BYTES = Number(process.env.HERMES_SOURCE_FILE_MAX_BYTES ?? 2 * 1024 * 1024);
 const recentZaloLinks = new Map<string, { url: string; title?: string; createdAt: number }>();
+const recentZaloFiles = new Map<string, { file: HermesZaloSourceFile; createdAt: number }>();
 
 function saveRecentZaloLink(zaloId: string, url: string, title?: string): void {
   recentZaloLinks.set(zaloId, { url, title, createdAt: Date.now() });
@@ -225,6 +230,120 @@ function withRecentZaloLinkContext(zaloId: string, body: string): string {
     `URL: ${recent.url}`,
     recent.title ? `Tiêu đề: ${recent.title}` : '',
   ].filter(Boolean).join('\n');
+}
+
+function guessMimeType(fileName: string): string | undefined {
+  const ext = path.extname(fileName).toLowerCase();
+  const mimes: Record<string, string> = {
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.csv': 'text/csv',
+    '.txt': 'text/plain',
+    '.json': 'application/json',
+    '.pdf': 'application/pdf',
+    '.xls': 'application/vnd.ms-excel',
+    '.doc': 'application/msword',
+  };
+  return mimes[ext];
+}
+
+async function buildHermesSourceFile(localPath: string, fileName: string): Promise<HermesZaloSourceFile | null> {
+  const info = await stat(localPath);
+  if (info.size > MAX_HERMES_FILE_BYTES) {
+    console.warn(`[Hermes] Source file too large for inline reading: ${fileName} (${info.size} bytes)`);
+    return null;
+  }
+  const data = await readFile(localPath);
+  return {
+    name: fileName,
+    mimeType: guessMimeType(fileName),
+    contentBase64: data.toString('base64'),
+  };
+}
+
+function saveRecentZaloFile(zaloId: string, file: HermesZaloSourceFile): void {
+  recentZaloFiles.set(zaloId, { file, createdAt: Date.now() });
+}
+
+function getRecentZaloFiles(zaloId: string): HermesZaloSourceFile[] | undefined {
+  const recent = recentZaloFiles.get(zaloId);
+  if (!recent) return undefined;
+  if (Date.now() - recent.createdAt > RECENT_FILE_TTL_MS) {
+    recentZaloFiles.delete(zaloId);
+    return undefined;
+  }
+  return [recent.file];
+}
+
+async function sendHermesDecisionToZalo(
+  api: ZaloAPI,
+  decision: HermesDecision,
+  context: {
+    requestId: string;
+    zaloId: string;
+    type: 0 | 1;
+    displayName: string;
+    senderId: string;
+    senderName: string;
+    originalText: string;
+  },
+): Promise<boolean> {
+  if (decision.decision === 'auto_reply' && decision.replyText?.trim()) {
+    const zaloThreadType = context.type === ThreadType.Group ? ThreadType.Group : ThreadType.User;
+    await api.sendMessage({ msg: decision.replyText.trim() }, context.zaloId, zaloThreadType);
+    console.log(`[Hermes] auto_reply sent to Zalo requestId=${decision.requestId ?? context.requestId}`);
+    await tgBot.telegram.sendMessage(
+      config.telegram.approvalGroupId,
+      formatHermesAuditLog(
+        '🧠 Hermes đã tự trả lời Zalo',
+        `Nơi nhận: ${context.displayName}\nNgười hỏi: ${context.senderName}\nTin hỏi: ${context.originalText}\n\nTrả lời:\n${decision.replyText.trim()}`,
+      ),
+      { parse_mode: 'HTML' },
+    ).catch(() => undefined);
+    return true;
+  }
+
+  if (decision.decision === 'needs_approval' && decision.replyText?.trim()) {
+    const approvalId = `ha_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+    const approval = {
+      approvalId,
+      requestId: decision.requestId ?? context.requestId,
+      zaloId: context.zaloId,
+      threadType: context.type,
+      chatName: context.displayName,
+      senderId: context.senderId,
+      senderName: context.senderName,
+      originalText: context.originalText,
+      replyText: decision.replyText.trim(),
+      reason: decision.reason ?? decision.approvalPrompt,
+      createdAt: new Date().toISOString(),
+    };
+    hermesApprovalStore.save(approval);
+    try {
+      const sent = await sendHermesApprovalRequest(approval);
+      hermesApprovalStore.save({ ...approval, telegramMessageId: sent.messageId });
+      console.log(`[Hermes] approval requested approvalId=${approvalId} requestId=${approval.requestId} chatId=${sent.chatId}`);
+      return true;
+    } catch (approvalErr) {
+      hermesApprovalStore.remove(approvalId);
+      console.warn('[Hermes] Failed to send approval request:', approvalErr);
+      if (context.type === ThreadType.User) {
+        await api.sendMessage(
+          { msg: 'Em đã nhận tin này, nhưng nội dung cần anh Quốc duyệt và kênh duyệt Telegram đang lỗi. Em đã ghi nhận để xử lý lại.' },
+          context.zaloId,
+          ThreadType.User,
+        );
+        return true;
+      }
+    }
+  }
+
+  if (decision.decision === 'ignore') {
+    console.log(`[Hermes] ignored Zalo message requestId=${decision.requestId ?? context.requestId}`);
+    return true;
+  }
+
+  return false;
 }
 
 export function setupZaloHandler(api: ZaloAPI): void {
@@ -341,6 +460,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
         console.log(`[Hermes] route_check type=${type} route=${hermesRoute.route} alias=${hermesRoute.invokedByAlias} sender="${senderName}" chat="${displayName}" text="${truncate(body, 120)}"`);
         if (hermesRoute.route) {
           const hermesBody = withRecentZaloLinkContext(zaloId, body);
+          const sourceFiles = getRecentZaloFiles(zaloId);
           const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
           let decision: Awaited<ReturnType<typeof decideWithHermes>>;
           try {
@@ -358,6 +478,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
                 isDirectChat: type === ThreadType.User,
                 invokedByAlias: hermesRoute.invokedByAlias,
               },
+              sourceFiles,
             });
           } catch (hermesErr) {
             console.error(`[Hermes] decision failed requestId=${requestId}:`, hermesErr);
@@ -372,58 +493,18 @@ export function setupZaloHandler(api: ZaloAPI): void {
             throw hermesErr;
           }
 
-          if (decision.decision === 'auto_reply' && decision.replyText?.trim()) {
-            const zaloThreadType = type === ThreadType.Group ? ThreadType.Group : ThreadType.User;
-            await api.sendMessage({ msg: decision.replyText.trim() }, zaloId, zaloThreadType);
-            console.log(`[Hermes] auto_reply sent to Zalo requestId=${decision.requestId ?? requestId}`);
-            await tgBot.telegram.sendMessage(
-              config.telegram.approvalGroupId,
-              formatHermesAuditLog(
-                '🧠 Hermes đã tự trả lời Zalo',
-                `Nơi nhận: ${displayName}\nNgười hỏi: ${senderName}\nTin hỏi: ${hermesBody}\n\nTrả lời:\n${decision.replyText.trim()}`,
-              ),
-              { parse_mode: 'HTML' },
-            ).catch(() => undefined);
-            return;
-          }
-
-          if (decision.decision === 'needs_approval' && decision.replyText?.trim()) {
-            const approvalId = `ha_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
-            const approval = {
-              approvalId,
-              requestId: decision.requestId ?? requestId,
-              zaloId,
-              threadType: type,
-              chatName: displayName,
-              senderId: msg.data.uidFrom,
-              senderName,
-              originalText: hermesBody,
-              replyText: decision.replyText.trim(),
-              reason: decision.reason ?? decision.approvalPrompt,
-              createdAt: new Date().toISOString(),
-            };
-            hermesApprovalStore.save(approval);
-            try {
-              const sent = await sendHermesApprovalRequest(approval);
-              hermesApprovalStore.save({ ...approval, telegramMessageId: sent.messageId });
-              console.log(`[Hermes] approval requested approvalId=${approvalId} requestId=${approval.requestId} chatId=${sent.chatId}`);
-              return;
-            } catch (approvalErr) {
-              hermesApprovalStore.remove(approvalId);
-              console.warn('[Hermes] Failed to send approval request:', approvalErr);
-              if (type === ThreadType.User) {
-                await api.sendMessage(
-                  { msg: 'Em đã nhận tin này, nhưng nội dung cần anh Quốc duyệt và kênh duyệt Telegram đang lỗi. Em đã ghi nhận để xử lý lại.' },
-                  zaloId,
-                  ThreadType.User,
-                );
-                return;
-              }
-            }
-          }
-
-          if (decision.decision === 'ignore') {
-            console.log(`[Hermes] ignored Zalo message requestId=${decision.requestId ?? requestId}`);
+          const handled = await sendHermesDecisionToZalo(api, decision, {
+            requestId,
+            zaloId,
+            type,
+            displayName,
+            senderId: msg.data.uidFrom,
+            senderName,
+            originalText: sourceFiles?.length
+              ? `${hermesBody}\n\n[Đính kèm gần nhất: ${sourceFiles.map(file => file.name).join(', ')}]`
+              : hermesBody,
+          });
+          if (handled) {
             return;
           }
         }
@@ -594,7 +675,6 @@ ${escapeHtml(photoCaption)}`
 
       // ── 4. File ────────────────────────────────────────────────────────────
       if (msgType === ZALO_MSG_TYPES.FILE) {
-        const { tgOpts, saveTgMapping } = await getBridgeContext();
         const url = media.href;
         // title holds the original filename (e.g. "report.pdf")
         const fileName = media.title ?? `file_${Date.now()}`;
@@ -603,8 +683,55 @@ ${escapeHtml(photoCaption)}`
           return;
         }
         const localPath = await downloadToTemp(url, fileName);
-        const stream = createReadStream(localPath);
         try {
+          if (type === ThreadType.User) {
+            const sourceFile = await buildHermesSourceFile(localPath, fileName);
+            if (sourceFile) {
+              saveRecentZaloFile(zaloId, sourceFile);
+              const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+              const prompt = [
+                `Anh Quốc vừa gửi file "${fileName}" qua Zalo.`,
+                'Hãy đọc nội dung file và trả lời đúng yêu cầu nếu người dùng có kèm chỉ dẫn.',
+                media.description ? `Ghi chú Zalo: ${media.description}` : '',
+              ].filter(Boolean).join('\n');
+              const decision = await decideWithHermes({
+                requestId,
+                channel: 'zalo',
+                chat: { id: zaloId, type, name: displayName },
+                sender: { id: msg.data.uidFrom, name: senderName },
+                message: {
+                  text: prompt,
+                  msgId: msg.data.msgId,
+                  timestamp: msg.data.ts,
+                },
+                routing: {
+                  isDirectChat: true,
+                  invokedByAlias: true,
+                },
+                sourceFiles: [sourceFile],
+              });
+              const handled = await sendHermesDecisionToZalo(api, decision, {
+                requestId,
+                zaloId,
+                type,
+                displayName,
+                senderId: msg.data.uidFrom,
+                senderName,
+                originalText: `[File] ${fileName}`,
+              });
+              if (handled) return;
+            } else {
+              await api.sendMessage(
+                { msg: `Em đã nhận file "${fileName}", nhưng file hơi lớn nên chưa đọc trực tiếp được. Anh gửi file nhỏ hơn hoặc copy phần cần xem vào đây giúp em nhé.` },
+                zaloId,
+                ThreadType.User,
+              );
+              return;
+            }
+          }
+
+          const { tgOpts, saveTgMapping } = await getBridgeContext();
+          const stream = createReadStream(localPath);
           const sent = await tgBot.telegram.sendDocument(
             config.telegram.groupId,
             { source: stream, filename: fileName },

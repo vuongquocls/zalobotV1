@@ -21,6 +21,13 @@ export interface HermesZaloRequest {
     isDirectChat: boolean;
     invokedByAlias: boolean;
   };
+  sourceFiles?: HermesZaloSourceFile[];
+}
+
+export interface HermesZaloSourceFile {
+  name: string;
+  mimeType?: string;
+  contentBase64: string;
 }
 
 export interface HermesDecision {
