@@ -15,7 +15,8 @@ import { msgStore, userCache, pollStore, sentMsgStore, zaloAlbumStore, type Zalo
 import { decideWithHermes } from '../hermes/connector.js';
 import { shouldRouteZaloTextToHermes } from '../hermes/routing.js';
 import { hermesApprovalStore } from '../hermes/approvalStore.js';
-import { formatHermesApprovalMessage, formatHermesAuditLog } from '../hermes/format.js';
+import { formatHermesAuditLog } from '../hermes/format.js';
+import { sendHermesApprovalRequest } from '../hermes/approvalDelivery.js';
 
 let telegramForumUnavailable = false;
 
@@ -379,21 +380,9 @@ export function setupZaloHandler(api: ZaloAPI): void {
             };
             hermesApprovalStore.save(approval);
             try {
-              const sent = await tgBot.telegram.sendMessage(
-                config.telegram.approvalGroupId,
-                formatHermesApprovalMessage(approval),
-                {
-                  parse_mode: 'HTML',
-                  reply_markup: {
-                    inline_keyboard: [[
-                      { text: '✅ Duyệt gửi Zalo', callback_data: `ha:a:${approvalId}` },
-                      { text: '❌ Từ chối', callback_data: `ha:r:${approvalId}` },
-                    ]],
-                  },
-                },
-              );
-              hermesApprovalStore.save({ ...approval, telegramMessageId: sent.message_id });
-              console.log(`[Hermes] approval requested approvalId=${approvalId} requestId=${approval.requestId}`);
+              const sent = await sendHermesApprovalRequest(approval);
+              hermesApprovalStore.save({ ...approval, telegramMessageId: sent.messageId });
+              console.log(`[Hermes] approval requested approvalId=${approvalId} requestId=${approval.requestId} chatId=${sent.chatId}`);
               return;
             } catch (approvalErr) {
               hermesApprovalStore.remove(approvalId);

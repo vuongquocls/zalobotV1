@@ -1,6 +1,7 @@
 import { ThreadType } from 'zca-js';
 import path from 'path';
 import { createReadStream } from 'fs';
+import type { Context } from 'telegraf';
 
 import type { ZaloAPI } from '../zalo/types.js';
 import { store, msgStore, userCache, friendsCache, sentMsgStore, pollStore, mediaGroupStore } from '../store.js';
@@ -9,6 +10,7 @@ import { config } from '../config.js';
 import { downloadToTemp, cleanTemp, convertToM4a } from '../utils/media.js';
 import { triggerQRLogin } from '../zalo/client.js';
 import { hermesApprovalStore } from '../hermes/approvalStore.js';
+import { hermesApprovalTargetStore } from '../hermes/approvalTargets.js';
 import { escapeHtml } from '../utils/format.js';
 
 // ── Mention resolution helper ──────────────────────────────────────────────
@@ -157,6 +159,33 @@ export function setupTelegramHandler(
 
   /** Exposed setter so index.ts can inject the auto-logged-in API. */
   const setCurrentApi = (api: ZaloAPI) => { currentApi = api; };
+
+  const saveApprovalDmTarget = async (ctx: Context) => {
+    if (ctx.chat?.type !== 'private') {
+      await ctx.reply('Lệnh này cần gửi trong chat riêng với bot Telegram.');
+      return;
+    }
+    const from = ctx.from;
+    const name = [from?.first_name, from?.last_name].filter(Boolean).join(' ') || from?.username;
+    hermesApprovalTargetStore.upsert({
+      chatId: ctx.chat.id,
+      userId: String(from?.id ?? ctx.chat.id),
+      name,
+    });
+    await ctx.reply(`Đã lưu chat này làm nơi duyệt Hermes.\nTelegram user id: ${from?.id ?? ctx.chat.id}`);
+  };
+
+  tgBot.start(async (ctx) => {
+    await saveApprovalDmTarget(ctx);
+  });
+
+  tgBot.command('duyet_here', async (ctx) => {
+    await saveApprovalDmTarget(ctx);
+  });
+
+  tgBot.command('approve_here', async (ctx) => {
+    await saveApprovalDmTarget(ctx);
+  });
 
   tgBot.command('login', async (ctx) => {
     if (ctx.chat.id !== config.telegram.groupId) return;
