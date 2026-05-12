@@ -18,7 +18,8 @@ import { shouldRouteZaloTextToHermes } from '../hermes/routing.js';
 import { hermesApprovalStore } from '../hermes/approvalStore.js';
 import { formatHermesAuditLog } from '../hermes/format.js';
 import { sendHermesApprovalRequest } from '../hermes/approvalDelivery.js';
-import { inferPostApprovalAction } from '../hermes/postApprovalAction.js';
+import { inferPostApprovalAction, preflightPostApprovalAction } from '../hermes/postApprovalAction.js';
+import { sheetWriteProposalStore, type PendingSheetWriteProposal } from '../hermes/sheetWriteProposalStore.js';
 import type { HermesDecision, HermesZaloSourceFile } from '../hermes/types.js';
 import { formatVietnamDateTime, isReminderCapabilityQuestion, parseReminderRequest } from '../reminders/parser.js';
 import { startZaloReminderScheduler } from '../reminders/scheduler.js';
@@ -270,16 +271,44 @@ function withRecentZaloLinkContext(zaloId: string, body: string): string {
   ].filter(Boolean).join('\n');
 }
 
-function withSheetWriteCapabilityHint(body: string): string {
+async function withSheetWriteProposalHint(body: string): Promise<string> {
   const action = inferPostApprovalAction(body);
   if (action?.type !== 'google_sheet_write_draft') return body;
+  let preflightText = '';
+  try {
+    const preflight = await preflightPostApprovalAction(action);
+    if (preflight?.row) {
+      preflightText = [
+        '',
+        '[Kết quả kiểm tra Sheet trước khi trả lời]',
+        `Worksheet: ${preflight.worksheet ?? ''}`,
+        `Dòng tìm thấy: ${preflight.row}`,
+        preflight.target_date ? `Ngày đăng dự kiến: ${preflight.target_date}` : '',
+        preflight.topic ? `Chủ đề hiện có: ${preflight.topic}` : '',
+      ].filter(Boolean).join('\n');
+    }
+  } catch (err) {
+    console.warn('[Hermes] sheet write preflight failed:', err);
+  }
   return [
     body,
+    preflightText,
     '',
     '[Khả năng hệ thống]',
-    'Gateway Zalo có thể ghi nội dung đã được anh Quốc duyệt vào Google Sheet sau bước duyệt Telegram.',
-    'Nếu người dùng yêu cầu tạo/ghi nội dung vào Sheet, hãy soạn đúng nội dung cuối cùng cần ghi vào cột bản nháp. Không nói rằng em không thể ghi Sheet, và không xác nhận đã ghi trước khi được duyệt.',
-  ].join('\n');
+    'Đây là bước xin ý kiến để trả lời Zalo, chưa ghi Google Sheet.',
+    'Hãy trả lời rõ theo mẫu: "ngày đăng dự kiến ... nằm ở dòng ...", rồi "Em đề xuất ghi như sau:" và liệt kê các trường có thể ghi: Nhóm nội dung (Cột C), Chủ đề (Cột D), Kênh đăng tải (Cột E), Định dạng bài viết (Cột F), Đơn vị/Cá nhân thực hiện (Cột G), Lưu ý (Cột H), Link ảnh/video nguồn (Cột I), Bản nháp tiếng Việt (Cột J).',
+    'Không nói rằng em đã ghi Sheet. Cuối câu hãy hỏi người dùng có đồng ý để em gửi yêu cầu ghi Sheet không.',
+  ].filter(Boolean).join('\n');
+}
+
+function isSheetWriteAgreement(text: string): boolean {
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd');
+  if (/\b(khong|khong dong y|huy|thoi|dung)\b/.test(normalized)) return false;
+  return /\b(dong y|ok|oke|duyet|chap nhan|ghi di|ghi vao sheet|trien khai|lam di)\b/.test(normalized);
 }
 
 function guessMimeType(fileName: string): string | undefined {
@@ -339,6 +368,7 @@ async function sendHermesDecisionToZalo(
   },
 ): Promise<boolean> {
   const postApprovalAction = inferPostApprovalAction(context.originalText);
+  const isSheetWriteProposal = postApprovalAction?.type === 'google_sheet_write_draft';
   const replyText = decision.replyText?.trim();
   if (decision.decision === 'auto_reply' && replyText && !postApprovalAction) {
     const zaloThreadType = context.type === ThreadType.Group ? ThreadType.Group : ThreadType.User;
@@ -369,7 +399,8 @@ async function sendHermesDecisionToZalo(
       replyText,
       reason: decision.reason ?? decision.approvalPrompt,
       createdAt: new Date().toISOString(),
-      postApprovalAction,
+      postApprovalAction: isSheetWriteProposal ? undefined : postApprovalAction,
+      deferredPostApprovalAction: isSheetWriteProposal ? postApprovalAction : undefined,
     };
     hermesApprovalStore.save(approval);
     try {
@@ -397,6 +428,53 @@ async function sendHermesDecisionToZalo(
   }
 
   return false;
+}
+
+async function requestSheetWriteApprovalFromProposal(
+  api: ZaloAPI,
+  proposalId: string,
+  proposal: PendingSheetWriteProposal,
+  contextText: string,
+): Promise<boolean> {
+  const approvalId = `ha_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+  const approval = {
+    approvalId,
+    requestId: `zalo_sheet_write_${randomUUID().replace(/-/g, '').slice(0, 10)}`,
+    zaloId: proposal.zaloId,
+    threadType: proposal.threadType,
+    chatName: proposal.chatName,
+    senderId: proposal.senderId,
+    senderName: proposal.senderName,
+    originalText: [
+      'Người dùng đã đồng ý ghi đề xuất vào Google Sheet.',
+      '',
+      'Tin đồng ý:',
+      contextText,
+      '',
+      'Đề xuất đã duyệt trước đó:',
+      proposal.approvedText,
+    ].join('\n'),
+    replyText: proposal.approvedText,
+    reason: 'user_confirmed_sheet_write',
+    createdAt: new Date().toISOString(),
+    postApprovalAction: proposal.action,
+  };
+  hermesApprovalStore.save(approval);
+  try {
+    const sent = await sendHermesApprovalRequest(approval);
+    hermesApprovalStore.save({ ...approval, telegramMessageId: sent.messageId });
+    sheetWriteProposalStore.remove(proposalId);
+    await api.sendMessage(
+      { msg: 'Em đã gửi yêu cầu ghi Google Sheet sang Telegram để anh duyệt lần cuối.' },
+      proposal.zaloId,
+      proposal.threadType === ThreadType.Group ? ThreadType.Group : ThreadType.User,
+    );
+    return true;
+  } catch (err) {
+    hermesApprovalStore.remove(approvalId);
+    console.warn('[Hermes] Failed to request final sheet write approval:', err);
+    return false;
+  }
 }
 
 export function setupZaloHandler(api: ZaloAPI): void {
@@ -514,6 +592,25 @@ export function setupZaloHandler(api: ZaloAPI): void {
 
         const hermesRoute = shouldRouteZaloTextToHermes(body, type);
         console.log(`[Hermes] route_check type=${type} route=${hermesRoute.route} alias=${hermesRoute.invokedByAlias} sender="${senderName}" chat="${displayName}" text="${truncate(body, 120)}"`);
+        const pendingSheetWrite = sheetWriteProposalStore.latest(zaloId, type);
+        if (
+          pendingSheetWrite
+          && isSheetWriteAgreement(body)
+          && (type === ThreadType.User || hermesRoute.invokedByAlias)
+        ) {
+          const requested = await requestSheetWriteApprovalFromProposal(
+            api,
+            pendingSheetWrite.id,
+            {
+              ...pendingSheetWrite,
+              senderId: msg.data.uidFrom,
+              senderName,
+            },
+            body,
+          );
+          if (requested) return;
+        }
+
         if (hermesRoute.route) {
           if (isReminderCapabilityQuestion(body)) {
             await api.sendMessage(
@@ -567,7 +664,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
           }
 
           const hermesContextBody = withRecentZaloLinkContext(zaloId, body);
-          const hermesBody = withSheetWriteCapabilityHint(hermesContextBody);
+          const hermesBody = await withSheetWriteProposalHint(hermesContextBody);
           const sourceFiles = getRecentZaloFiles(zaloId);
           const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
           let decision: Awaited<ReturnType<typeof decideWithHermes>>;

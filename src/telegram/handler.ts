@@ -16,6 +16,7 @@ import { decideWithHermes } from '../hermes/connector.js';
 import { formatHermesApprovalMessage } from '../hermes/format.js';
 import { hermesApprovalReplyMarkup } from '../hermes/approvalDelivery.js';
 import { executePostApprovalAction } from '../hermes/postApprovalAction.js';
+import { sheetWriteProposalStore } from '../hermes/sheetWriteProposalStore.js';
 import { escapeHtml } from '../utils/format.js';
 
 // ── Mention resolution helper ──────────────────────────────────────────────
@@ -512,6 +513,20 @@ export function setupTelegramHandler(
           const zaloMsgId = sendResult?.message?.msgId;
           if (tgMessageId !== undefined && zaloMsgId !== undefined) {
             sentMsgStore.save(tgMessageId, { msgId: zaloMsgId, zaloId: entry.zaloId, threadType: entry.threadType });
+          }
+          if (entry.deferredPostApprovalAction?.type === 'google_sheet_write_draft') {
+            sheetWriteProposalStore.save({
+              id: entry.approvalId,
+              zaloId: entry.zaloId,
+              threadType: entry.threadType,
+              chatName: entry.chatName,
+              senderId: entry.senderId,
+              senderName: entry.senderName,
+              originalText: entry.originalText,
+              approvedText: entry.replyText,
+              action: entry.deferredPostApprovalAction,
+              createdAt: new Date().toISOString(),
+            });
           }
 
           hermesApprovalStore.remove(entry.approvalId);

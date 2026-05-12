@@ -20,6 +20,10 @@ SHEET_ID_DEFAULT = "1tdgynCsD8b3JjptyAvXNbZtnF5Ng6ChaFxQO4uHDYK8"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 HEADER_ALIASES = {
+    "group": [
+        "nhom noi dung",
+        "nhóm nội dung",
+    ],
     "date": [
         "ngay du kien dang",
         "ngày dự kiến đăng",
@@ -56,6 +60,36 @@ HEADER_ALIASES = {
         "trang thai",
         "trạng thái",
     ],
+}
+
+FIELD_ALIASES = {
+    "group": ["nhom noi dung", "nhóm nội dung"],
+    "topic": ["chu de", "chủ đề", "chu de tieu de bai viet", "chủ đề tiêu đề bài viết"],
+    "channel": ["kenh dang tai", "kênh đăng tải"],
+    "format": ["dinh dang bai viet", "định dạng bài viết"],
+    "owner": ["don vi ca nhan thuc hien", "đơn vị cá nhân thực hiện", "nguoi thuc hien", "người thực hiện"],
+    "note": ["luu y", "lưu ý"],
+    "media": ["link anh video nguon", "link ảnh video nguồn", "link anh", "link ảnh"],
+    "draft": ["ban nhap tieng viet", "bản nháp tiếng việt", "ban nhap", "bản nháp"],
+}
+
+FIELD_TO_HEADER = {
+    "group": "group",
+    "topic": "topic",
+    "channel": "channel",
+    "format": "format",
+    "owner": "owner",
+    "note": "note",
+    "media": "media",
+    "draft": "draft",
+}
+
+EXTRA_HEADER_ALIASES = {
+    "channel": ["kenh dang tai", "kênh đăng tải"],
+    "format": ["dinh dang bai viet", "định dạng bài viết"],
+    "owner": ["don vi ca nhan thuc hien", "đơn vị/cá nhân thực hiện", "đơn vị cá nhân thực hiện"],
+    "note": ["luu y", "lưu ý"],
+    "media": ["link anh/video nguon", "link ảnh/video nguồn", "link anh video nguon", "link ảnh video nguồn"],
 }
 
 
@@ -124,7 +158,8 @@ def _open_worksheet(sheet_id: str, worksheet_gid: str | None):
 
 def _col(headers: list[str], logical: str, required: bool = True) -> int | None:
     normalized = [_norm(h) for h in headers]
-    for alias in HEADER_ALIASES[logical]:
+    aliases = HEADER_ALIASES.get(logical, []) + EXTRA_HEADER_ALIASES.get(logical, [])
+    for alias in aliases:
         wanted = _norm(alias)
         if wanted in normalized:
             return normalized.index(wanted) + 1
@@ -138,6 +173,31 @@ def _cell(row: list[str], col_1based: int | None) -> str:
         return ""
     idx = col_1based - 1
     return row[idx] if idx < len(row) else ""
+
+
+def _field_key(label: str) -> str | None:
+    normalized = _norm(re.sub(r"\(?\s*cot\s+[a-z]\s*\)?", "", label, flags=re.IGNORECASE))
+    for key, aliases in FIELD_ALIASES.items():
+        if normalized in [_norm(alias) for alias in aliases]:
+            return key
+    return None
+
+
+def _parse_approved_fields(text: str) -> dict[str, str]:
+    fields: dict[str, list[str]] = {}
+    current: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        match = re.match(r"^\s*(.+?)(?:\s*\((?:cột|cot)\s+[A-Z]\))?\s*:\s*(.*)$", line, flags=re.IGNORECASE)
+        if match:
+            key = _field_key(match.group(1))
+            if key:
+                current = key
+                fields[current] = [match.group(2).strip()] if match.group(2).strip() else []
+                continue
+        if current and line.strip():
+            fields[current].append(line.strip())
+    return {key: "\n".join(parts).strip() for key, parts in fields.items() if "\n".join(parts).strip()}
 
 
 def _find_row(
@@ -185,9 +245,9 @@ def _backup(row_number: int, headers: list[str], row: list[str]) -> str:
 
 
 def cmd_write_draft(args: argparse.Namespace) -> None:
-    draft = (args.draft_text or sys.stdin.read()).strip()
-    if len(draft) < 10:
-        _json({"ok": False, "error": "draft_too_short", "length": len(draft)}, 2)
+    approved_text = (args.approved_text or args.draft_text or sys.stdin.read()).strip()
+    if len(approved_text) < 10:
+        _json({"ok": False, "error": "approved_text_too_short", "length": len(approved_text)}, 2)
 
     sheet_id = args.sheet_id or os.environ.get("QUOC01_CONTENT_SHEET_ID") or SHEET_ID_DEFAULT
     _, ws = _open_worksheet(sheet_id, args.worksheet_gid)
@@ -200,6 +260,18 @@ def cmd_write_draft(args: argparse.Namespace) -> None:
     status_col = _col(headers, "post_status", required=False)
     date_col = _col(headers, "date", required=False)
     topic_col = _col(headers, "topic", required=False)
+    field_values = _parse_approved_fields(approved_text)
+    if not field_values:
+        field_values = {"draft": approved_text}
+    field_cols: dict[str, int] = {}
+    for field_key in field_values:
+        logical = FIELD_TO_HEADER.get(field_key)
+        if logical:
+            col = _col(headers, logical, required=False)
+            if col:
+                field_cols[field_key] = col
+    if "draft" not in field_cols:
+        field_cols["draft"] = draft_col
     row_number, row = _find_row(
         rows,
         row_number=args.row,
@@ -217,12 +289,14 @@ def cmd_write_draft(args: argparse.Namespace) -> None:
             "worksheet": ws.title,
             "target_date": _cell(row, date_col),
             "topic": _cell(row, topic_col),
-            "draft_len": len(draft),
+            "draft_len": len(field_values.get("draft", "")),
             "post_status": _cell(row, status_col),
+            "updated_fields": list(field_cols.keys()),
         })
 
     backup_path = _backup(row_number, headers, row)
-    ws.update_cell(row_number, draft_col, draft)
+    for field_key, col in field_cols.items():
+        ws.update_cell(row_number, col, field_values[field_key])
     if args.post_status and status_col:
         ws.update_cell(row_number, status_col, args.post_status)
     verify = ws.row_values(row_number)
@@ -235,6 +309,7 @@ def cmd_write_draft(args: argparse.Namespace) -> None:
         "topic": _cell(verify, topic_col),
         "draft_len": len(_cell(verify, draft_col)),
         "post_status": _cell(verify, status_col),
+        "updated_fields": list(field_cols.keys()),
         "backup": backup_path,
     })
 
@@ -250,6 +325,7 @@ def main() -> None:
     write.add_argument("--date")
     write.add_argument("--topic")
     write.add_argument("--draft-text")
+    write.add_argument("--approved-text")
     write.add_argument("--post-status", default="Chờ đăng")
     write.add_argument("--dry-run", action="store_true")
     write.set_defaults(func=cmd_write_draft)

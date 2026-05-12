@@ -27,6 +27,7 @@ export interface PendingHermesApproval {
   createdAt: string;
   telegramMessageId?: number;
   postApprovalAction?: PendingHermesPostApprovalAction;
+  deferredPostApprovalAction?: PendingHermesPostApprovalAction;
 }
 
 type ApprovalData = Record<string, PendingHermesApproval>;

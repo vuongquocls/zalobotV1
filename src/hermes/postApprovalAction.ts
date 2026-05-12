@@ -33,6 +33,7 @@ interface SheetWriteOutput {
   post_status?: string;
   worksheet?: string;
   backup?: string;
+  updated_fields?: string[];
 }
 
 function escapeHtml(value: string): string {
@@ -233,7 +234,7 @@ async function executeGoogleSheetWriteDraft(
   const args = [
     config.hermes.sheetWrite.scriptPath,
     'write-draft',
-    '--draft-text',
+    '--approved-text',
     draftText,
     '--post-status',
     'Chờ đăng',
@@ -271,6 +272,7 @@ async function executeGoogleSheetWriteDraft(
     `Dòng Sheet: ${output.row ?? action.row}`,
     output.target_date ? `Ngày: ${output.target_date}` : undefined,
     output.topic ? `Chủ đề: ${output.topic}` : undefined,
+    output.updated_fields?.length ? `Đã ghi: ${output.updated_fields.join(', ')}` : undefined,
     output.post_status ? `Trạng thái: ${output.post_status}` : undefined,
   ].filter((line): line is string => Boolean(line));
 
@@ -282,6 +284,7 @@ async function executeGoogleSheetWriteDraft(
     output.target_date ? `<b>Ngày:</b> ${escapeHtml(output.target_date)}` : undefined,
     output.topic ? `<b>Chủ đề:</b> ${escapeHtml(output.topic)}` : undefined,
     output.draft_len !== undefined ? `<b>Số ký tự đã ghi:</b> ${output.draft_len}` : undefined,
+    output.updated_fields?.length ? `<b>Cột đã ghi:</b> ${escapeHtml(output.updated_fields.join(', '))}` : undefined,
     output.post_status ? `<b>Trạng thái:</b> ${escapeHtml(output.post_status)}` : undefined,
   ].filter((line): line is string => Boolean(line));
 
@@ -289,6 +292,54 @@ async function executeGoogleSheetWriteDraft(
     telegramSummary: telegramLines.join('\n'),
     zaloMessage: zaloLines.join('\n'),
   };
+}
+
+export async function preflightPostApprovalAction(
+  action: PendingHermesPostApprovalAction,
+): Promise<SheetWriteOutput | undefined> {
+  if (action.type !== 'google_sheet_write_draft') return undefined;
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HERMES_HOME: config.hermes.sheetWrite.home,
+    GOOGLE_SERVICE_ACCOUNT_FILE: config.hermes.sheetWrite.googleServiceAccountFile,
+  };
+  const sheetId = action.sheetId || config.hermes.sheetWrite.sheetId;
+  if (sheetId) {
+    env.QUOC01_CONTENT_SHEET_ID = sheetId;
+  }
+
+  const args = [
+    config.hermes.sheetWrite.scriptPath,
+    'write-draft',
+    '--approved-text',
+    'Đây là kiểm tra dry-run, chưa ghi thật.',
+    '--dry-run',
+  ];
+  if (action.row > 1) {
+    args.push('--row', String(action.row));
+  }
+  if (action.targetDate) {
+    args.push('--date', action.targetDate);
+  }
+  if (action.topic) {
+    args.push('--topic', action.topic);
+  }
+  if (action.worksheetGid) {
+    args.push('--worksheet-gid', action.worksheetGid);
+  }
+
+  const { stdout } = await execFileAsync(
+    config.hermes.sheetWrite.pythonBin,
+    args,
+    {
+      env,
+      timeout: config.hermes.sheetWrite.timeoutMs,
+      maxBuffer: 1024 * 1024 * 8,
+    },
+  );
+  const output = parsePublishOutput(String(stdout)) as SheetWriteOutput;
+  return output.ok ? output : undefined;
 }
 
 export async function executePostApprovalAction(
