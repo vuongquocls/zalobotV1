@@ -3,6 +3,11 @@ import type { PendingHermesApproval } from './approvalStore.js';
 
 export function formatHermesApprovalMessage(entry: PendingHermesApproval): string {
   const reason = entry.reason ? `\n\n<b>Lý do cần duyệt:</b>\n${escapeHtml(entry.reason)}` : '';
+  const isSheetWrite = entry.postApprovalAction?.type === 'google_sheet_write_draft';
+  const draftLabel = isSheetWrite ? 'Dự thảo nội dung sẽ ghi vào Sheet:' : 'Dự thảo trả lời:';
+  const editHelp = isSheetWrite
+    ? 'Reply trực tiếp vào tin này bằng nội dung đã sửa. Bot sẽ cập nhật bản ghi Sheet, rồi anh bấm “Duyệt gửi Zalo”.'
+    : 'Reply trực tiếp vào tin này bằng bản trả lời đã sửa. Bot sẽ cập nhật dự thảo, rồi anh bấm “Duyệt gửi Zalo”.';
   const postAction = entry.postApprovalAction
     ? [
       '',
@@ -21,11 +26,11 @@ export function formatHermesApprovalMessage(entry: PendingHermesApproval): strin
     '<b>Tin Zalo:</b>',
     escapeHtml(entry.originalText),
     '',
-    '<b>Dự thảo trả lời:</b>',
+    `<b>${draftLabel}</b>`,
     escapeHtml(entry.replyText),
     '',
     '<b>Cách sửa trước khi gửi:</b>',
-    'Reply trực tiếp vào tin này bằng bản trả lời đã sửa. Bot sẽ cập nhật dự thảo, rồi anh bấm “Duyệt gửi Zalo”.',
+    editHelp,
     postAction,
     reason,
   ].join('\n');

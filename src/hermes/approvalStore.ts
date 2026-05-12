@@ -4,9 +4,13 @@ import path from 'path';
 import { config } from '../config.js';
 
 export interface PendingHermesPostApprovalAction {
-  type: 'facebook_publish_sheet_row';
+  type: 'facebook_publish_sheet_row' | 'google_sheet_write_draft';
   row: number;
   label: string;
+  sheetId?: string;
+  worksheetGid?: string;
+  targetDate?: string;
+  topic?: string;
 }
 
 export interface PendingHermesApproval {

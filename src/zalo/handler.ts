@@ -212,28 +212,74 @@ const _memberCacheLoaded = new Set<string>();
 const RECENT_LINK_TTL_MS = 30 * 60 * 1000;
 const RECENT_FILE_TTL_MS = 30 * 60 * 1000;
 const MAX_HERMES_FILE_BYTES = Number(process.env.HERMES_SOURCE_FILE_MAX_BYTES ?? 2 * 1024 * 1024);
-const recentZaloLinks = new Map<string, { url: string; title?: string; createdAt: number }>();
+type RecentZaloLink = { url: string; title?: string; createdAt: number; kind: 'google_sheet' | 'other' };
+const recentZaloLinks = new Map<string, RecentZaloLink[]>();
 const recentZaloFiles = new Map<string, { file: HermesZaloSourceFile; createdAt: number }>();
 
+function isGoogleSheetUrl(url: string): boolean {
+  return /https?:\/\/docs\.google\.com\/spreadsheets\/d\//i.test(url);
+}
+
+function mentionsGoogleSheet(text: string): boolean {
+  return /\b(google\s*sheet|sheet|bảng tính|bang tinh)\b/i.test(text);
+}
+
 function saveRecentZaloLink(zaloId: string, url: string, title?: string): void {
-  recentZaloLinks.set(zaloId, { url, title, createdAt: Date.now() });
+  const existing = recentZaloLinks.get(zaloId) ?? [];
+  const fresh: RecentZaloLink = {
+    url,
+    title,
+    createdAt: Date.now(),
+    kind: isGoogleSheetUrl(url) ? 'google_sheet' : 'other',
+  };
+  const next = [fresh, ...existing.filter(item => item.url !== url)].slice(0, 10);
+  recentZaloLinks.set(zaloId, next);
+}
+
+function saveRecentZaloLinksFromText(zaloId: string, text: string): void {
+  const urls = text.match(/https?:\/\/[^\s<>)]+/gi) ?? [];
+  for (const raw of urls) {
+    saveRecentZaloLink(zaloId, raw.replace(/[.,;!?]+$/, ''));
+  }
+}
+
+function latestRecentLink(zaloId: string, preferredKind?: RecentZaloLink['kind']): RecentZaloLink | undefined {
+  const links = recentZaloLinks.get(zaloId) ?? [];
+  const fresh = links.filter(item => Date.now() - item.createdAt <= RECENT_LINK_TTL_MS);
+  if (fresh.length !== links.length) {
+    recentZaloLinks.set(zaloId, fresh);
+  }
+  return preferredKind ? fresh.find(item => item.kind === preferredKind) : fresh[0];
 }
 
 function withRecentZaloLinkContext(zaloId: string, body: string): string {
-  if (/https?:\/\//i.test(body)) return body;
-  const recent = recentZaloLinks.get(zaloId);
+  const hasUrl = /https?:\/\//i.test(body);
+  const wantsSheet = mentionsGoogleSheet(body);
+  if (hasUrl && !wantsSheet) return body;
+  const recent = latestRecentLink(zaloId, wantsSheet ? 'google_sheet' : undefined);
   if (!recent) return body;
-  if (Date.now() - recent.createdAt > RECENT_LINK_TTL_MS) {
-    recentZaloLinks.delete(zaloId);
-    return body;
-  }
+  if (hasUrl && body.includes(recent.url)) return body;
   return [
     body,
     '',
-    '[Ngữ cảnh link Zalo vừa gửi trước đó]',
+    recent.kind === 'google_sheet'
+      ? '[Ngữ cảnh Google Sheet Zalo vừa gửi trước đó]'
+      : '[Ngữ cảnh link Zalo vừa gửi trước đó]',
     `URL: ${recent.url}`,
     recent.title ? `Tiêu đề: ${recent.title}` : '',
   ].filter(Boolean).join('\n');
+}
+
+function withSheetWriteCapabilityHint(body: string): string {
+  const action = inferPostApprovalAction(body);
+  if (action?.type !== 'google_sheet_write_draft') return body;
+  return [
+    body,
+    '',
+    '[Khả năng hệ thống]',
+    'Gateway Zalo có thể ghi nội dung đã được anh Quốc duyệt vào Google Sheet sau bước duyệt Telegram.',
+    'Nếu người dùng yêu cầu tạo/ghi nội dung vào Sheet, hãy soạn đúng nội dung cuối cùng cần ghi vào cột bản nháp. Không nói rằng em không thể ghi Sheet, và không xác nhận đã ghi trước khi được duyệt.',
+  ].join('\n');
 }
 
 function guessMimeType(fileName: string): string | undefined {
@@ -292,22 +338,24 @@ async function sendHermesDecisionToZalo(
     originalText: string;
   },
 ): Promise<boolean> {
-  if (decision.decision === 'auto_reply' && decision.replyText?.trim()) {
+  const postApprovalAction = inferPostApprovalAction(context.originalText);
+  const replyText = decision.replyText?.trim();
+  if (decision.decision === 'auto_reply' && replyText && !postApprovalAction) {
     const zaloThreadType = context.type === ThreadType.Group ? ThreadType.Group : ThreadType.User;
-    await api.sendMessage({ msg: decision.replyText.trim() }, context.zaloId, zaloThreadType);
+    await api.sendMessage({ msg: replyText }, context.zaloId, zaloThreadType);
     console.log(`[Hermes] auto_reply sent to Zalo requestId=${decision.requestId ?? context.requestId}`);
     await tgBot.telegram.sendMessage(
       config.telegram.approvalGroupId,
       formatHermesAuditLog(
         '🧠 Hermes đã tự trả lời Zalo',
-        `Nơi nhận: ${context.displayName}\nNgười hỏi: ${context.senderName}\nTin hỏi: ${context.originalText}\n\nTrả lời:\n${decision.replyText.trim()}`,
+        `Nơi nhận: ${context.displayName}\nNgười hỏi: ${context.senderName}\nTin hỏi: ${context.originalText}\n\nTrả lời:\n${replyText}`,
       ),
       { parse_mode: 'HTML' },
     ).catch(() => undefined);
     return true;
   }
 
-  if (decision.decision === 'needs_approval' && decision.replyText?.trim()) {
+  if ((decision.decision === 'needs_approval' || postApprovalAction) && replyText) {
     const approvalId = `ha_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
     const approval = {
       approvalId,
@@ -318,10 +366,10 @@ async function sendHermesDecisionToZalo(
       senderId: context.senderId,
       senderName: context.senderName,
       originalText: context.originalText,
-      replyText: decision.replyText.trim(),
+      replyText,
       reason: decision.reason ?? decision.approvalPrompt,
       createdAt: new Date().toISOString(),
-      postApprovalAction: inferPostApprovalAction(context.originalText),
+      postApprovalAction,
     };
     hermesApprovalStore.save(approval);
     try {
@@ -462,6 +510,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
       if (msgType === ZALO_MSG_TYPES.TEXT || (text !== null)) {
         const body = text ?? (typeof msg.data.content === 'string' ? msg.data.content : '');
         if (!body.trim()) return;
+        saveRecentZaloLinksFromText(zaloId, body);
 
         const hermesRoute = shouldRouteZaloTextToHermes(body, type);
         console.log(`[Hermes] route_check type=${type} route=${hermesRoute.route} alias=${hermesRoute.invokedByAlias} sender="${senderName}" chat="${displayName}" text="${truncate(body, 120)}"`);
@@ -517,7 +566,8 @@ export function setupZaloHandler(api: ZaloAPI): void {
             return;
           }
 
-          const hermesBody = withRecentZaloLinkContext(zaloId, body);
+          const hermesContextBody = withRecentZaloLinkContext(zaloId, body);
+          const hermesBody = withSheetWriteCapabilityHint(hermesContextBody);
           const sourceFiles = getRecentZaloFiles(zaloId);
           const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
           let decision: Awaited<ReturnType<typeof decideWithHermes>>;
@@ -559,8 +609,8 @@ export function setupZaloHandler(api: ZaloAPI): void {
             senderId: msg.data.uidFrom,
             senderName,
             originalText: sourceFiles?.length
-              ? `${hermesBody}\n\n[Đính kèm gần nhất: ${sourceFiles.map(file => file.name).join(', ')}]`
-              : hermesBody,
+              ? `${hermesContextBody}\n\n[Đính kèm gần nhất: ${sourceFiles.map(file => file.name).join(', ')}]`
+              : hermesContextBody,
           });
           if (handled) {
             return;

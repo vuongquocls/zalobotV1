@@ -496,7 +496,7 @@ export function setupTelegramHandler(
             await ctx.answerCbQuery('Đang chạy thao tác sau duyệt...');
           }
           const actionResult = entry.postApprovalAction
-            ? await executePostApprovalAction(entry.postApprovalAction)
+            ? await executePostApprovalAction(entry.postApprovalAction, entry.replyText)
             : undefined;
           const messageToZalo = actionResult?.zaloMessage ?? entry.replyText;
           const sendResult = await currentApi.sendMessage(

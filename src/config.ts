@@ -42,6 +42,17 @@ export const config = {
       sheetId: process.env.HERMES_PUBLISH_SHEET_ID ?? process.env.QUOC01_CONTENT_SHEET_ID,
       timeoutMs: Number(process.env.HERMES_PUBLISH_TIMEOUT_MS ?? 240000),
     },
+    sheetWrite: {
+      pythonBin: process.env.HERMES_SHEET_WRITE_PYTHON ?? process.env.HERMES_PUBLISH_PYTHON ?? 'python3',
+      scriptPath: process.env.HERMES_SHEET_WRITE_SCRIPT_PATH ?? 'scripts/sheet_write_draft.py',
+      home: process.env.HERMES_SHEET_WRITE_HOME ?? '/srv/yokdon-telegram/hermes/quoc01',
+      googleServiceAccountFile: process.env.HERMES_SHEET_WRITE_GOOGLE_SERVICE_ACCOUNT_FILE
+        ?? '/srv/yokdon-telegram/hermes/quoc01/google_key.json',
+      sheetId: process.env.HERMES_SHEET_WRITE_DEFAULT_SHEET_ID
+        ?? process.env.QUOC01_CONTENT_SHEET_ID
+        ?? process.env.HERMES_PUBLISH_SHEET_ID,
+      timeoutMs: Number(process.env.HERMES_SHEET_WRITE_TIMEOUT_MS ?? 120000),
+    },
   },
   dataDir: process.env.DATA_DIR ?? './data',
 } as const;
