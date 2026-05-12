@@ -538,11 +538,11 @@ export function setupZaloHandler(api: ZaloAPI): void {
             });
           } catch (hermesErr) {
             console.error(`[Hermes] decision failed requestId=${requestId}:`, hermesErr);
-            if (type === ThreadType.User) {
+            if (type === ThreadType.User || hermesRoute.invokedByAlias) {
               await api.sendMessage(
                 { msg: 'Em đã nhận tin nhưng đang lỗi kết nối Hermes. Anh thử nhắn lại giúp em sau ít phút nhé.' },
                 zaloId,
-                ThreadType.User,
+                type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
               );
               return;
             }
@@ -740,13 +740,19 @@ ${escapeHtml(photoCaption)}`
         }
         const localPath = await downloadToTemp(url, fileName);
         try {
-          if (type === ThreadType.User) {
-            const sourceFile = await buildHermesSourceFile(localPath, fileName);
+          const sourceFile = await buildHermesSourceFile(localPath, fileName);
+          if (sourceFile) {
+            saveRecentZaloFile(zaloId, sourceFile);
+          }
+
+          const fileRoute = type === ThreadType.User
+            || shouldRouteZaloTextToHermes([fileName, media.description ?? ''].join(' '), type).route;
+
+          if (fileRoute) {
             if (sourceFile) {
-              saveRecentZaloFile(zaloId, sourceFile);
               const requestId = `zalo_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
               const prompt = [
-                `Anh Quốc vừa gửi file "${fileName}" qua Zalo.`,
+                `Người dùng vừa gửi file "${fileName}" qua Zalo.`,
                 'Hãy đọc nội dung file và trả lời đúng yêu cầu nếu người dùng có kèm chỉ dẫn.',
                 media.description ? `Ghi chú Zalo: ${media.description}` : '',
               ].filter(Boolean).join('\n');
@@ -761,7 +767,7 @@ ${escapeHtml(photoCaption)}`
                   timestamp: msg.data.ts,
                 },
                 routing: {
-                  isDirectChat: true,
+                  isDirectChat: type === ThreadType.User,
                   invokedByAlias: true,
                 },
                 sourceFiles: [sourceFile],
@@ -780,7 +786,7 @@ ${escapeHtml(photoCaption)}`
               await api.sendMessage(
                 { msg: `Em đã nhận file "${fileName}", nhưng file hơi lớn nên chưa đọc trực tiếp được. Anh gửi file nhỏ hơn hoặc copy phần cần xem vào đây giúp em nhé.` },
                 zaloId,
-                ThreadType.User,
+                type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
               );
               return;
             }
@@ -877,9 +883,12 @@ ${escapeHtml(photoCaption)}`
         if (!href) return;
         saveRecentZaloLink(zaloId, href, title);
 
-        if (type === ThreadType.User) {
+        const linkRoute = type === ThreadType.User
+          || shouldRouteZaloTextToHermes([title ?? '', media.description ?? '', href].join(' '), type).route;
+
+        if (linkRoute) {
           const body = [
-            'Anh Quốc vừa gửi một link Zalo:',
+            'Người dùng vừa gửi một link Zalo:',
             `URL: ${href}`,
             title ? `Tiêu đề: ${title}` : '',
             media.description ? `Mô tả: ${media.description}` : '',
@@ -897,31 +906,18 @@ ${escapeHtml(photoCaption)}`
                 msgId: msg.data.msgId,
                 timestamp: msg.data.ts,
               },
-              routing: { isDirectChat: true, invokedByAlias: true },
+              routing: { isDirectChat: type === ThreadType.User, invokedByAlias: true },
             });
-            if (decision.decision === 'auto_reply' && decision.replyText?.trim()) {
-              await api.sendMessage({ msg: decision.replyText.trim() }, zaloId, ThreadType.User);
-              console.log(`[Hermes] link auto_reply sent to Zalo requestId=${decision.requestId ?? requestId}`);
-              return;
-            }
-            if (decision.decision === 'needs_approval' && decision.replyText?.trim()) {
-              const approvalId = `ha_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
-              const approval = {
-                approvalId,
-                requestId: decision.requestId ?? requestId,
-                zaloId,
-                threadType: type,
-                chatName: displayName,
-                senderId: msg.data.uidFrom,
-                senderName,
-                originalText: body,
-                replyText: decision.replyText.trim(),
-                reason: decision.reason ?? decision.approvalPrompt,
-                createdAt: new Date().toISOString(),
-              };
-              hermesApprovalStore.save(approval);
-              const sent = await sendHermesApprovalRequest(approval);
-              hermesApprovalStore.save({ ...approval, telegramMessageId: sent.messageId });
+            const handled = await sendHermesDecisionToZalo(api, decision, {
+              requestId,
+              zaloId,
+              type,
+              displayName,
+              senderId: msg.data.uidFrom,
+              senderName,
+              originalText: body,
+            });
+            if (handled) {
               return;
             }
           } catch (hermesErr) {
@@ -929,7 +925,7 @@ ${escapeHtml(photoCaption)}`
             await api.sendMessage(
               { msg: 'Em đã nhận link nhưng đang lỗi khi đọc nội dung. Anh thử gửi lại hoặc nói rõ anh muốn em xem phần nào nhé.' },
               zaloId,
-              ThreadType.User,
+              type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
             );
             return;
           }
