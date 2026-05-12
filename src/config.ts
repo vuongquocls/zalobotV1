@@ -25,7 +25,7 @@ export const config = {
   },
   zalo: {
     credentialsPath: process.env.ZALO_CREDENTIALS_PATH ?? './credentials.json',
-    botAliases: (process.env.ZALO_BOT_ALIASES ?? 'lâm,lam,hermes,zalo bot,bot')
+    botAliases: (process.env.ZALO_BOT_ALIASES ?? 'lâm,lam,nhân viên mới yok đôn,nhan vien moi yok don,hermes,zalo bot,bot')
       .split(',')
       .map(v => v.trim())
       .filter(Boolean),

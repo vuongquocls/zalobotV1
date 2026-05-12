@@ -563,6 +563,20 @@ export function setupZaloHandler(api: ZaloAPI): void {
           if (handled) {
             return;
           }
+
+          if (hermesRoute.invokedByAlias) {
+            await api.sendMessage(
+              { msg: 'Em nghe anh gọi rồi, nhưng Hermes đang chưa trả lời được. Anh thử lại sau ít phút giúp em nhé.' },
+              zaloId,
+              type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
+            );
+            console.warn(`[Hermes] invoked message not handled requestId=${decision.requestId ?? requestId} reason=${decision.reason ?? 'unknown'}`);
+            return;
+          }
+        }
+
+        if (type === ThreadType.Group) {
+          return;
         }
 
         const { tgBase, saveTgMapping } = await getBridgeContext();
@@ -570,9 +584,7 @@ export function setupZaloHandler(api: ZaloAPI): void {
         const bodyHtml = mentions?.length
           ? applyMentionsHtml(truncate(body), mentions)
           : escapeHtml(truncate(body));
-        const tgText = type === ThreadType.Group
-          ? formatGroupMsgHtml(senderName, bodyHtml)
-          : bodyHtml;
+        const tgText = bodyHtml;
         const sent = await tgBot.telegram.sendMessage(
           config.telegram.groupId,
           tgText,
