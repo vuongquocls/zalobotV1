@@ -33,6 +33,15 @@ export const config = {
   hermes: {
     coreUrl: (process.env.HERMES_CORE_URL ?? '').replace(/\/+$/, ''),
     timeoutMs: Number(process.env.HERMES_CORE_TIMEOUT_MS ?? 8000),
+    publish: {
+      pythonBin: process.env.HERMES_PUBLISH_PYTHON ?? 'python3',
+      scriptPath: process.env.HERMES_PUBLISH_SCRIPT_PATH ?? '/srv/yokdon-telegram/hermes/shared-tools/publish_sheet_row.py',
+      home: process.env.HERMES_PUBLISH_HOME ?? '/srv/yokdon-telegram/hermes/fb-publisher',
+      googleServiceAccountFile: process.env.HERMES_PUBLISH_GOOGLE_SERVICE_ACCOUNT_FILE
+        ?? '/srv/yokdon-telegram/hermes/fb-publisher/google_key.json',
+      sheetId: process.env.HERMES_PUBLISH_SHEET_ID ?? process.env.QUOC01_CONTENT_SHEET_ID,
+      timeoutMs: Number(process.env.HERMES_PUBLISH_TIMEOUT_MS ?? 240000),
+    },
   },
   dataDir: process.env.DATA_DIR ?? './data',
 } as const;

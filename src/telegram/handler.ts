@@ -15,6 +15,7 @@ import { hermesApprovalTargetStore } from '../hermes/approvalTargets.js';
 import { decideWithHermes } from '../hermes/connector.js';
 import { formatHermesApprovalMessage } from '../hermes/format.js';
 import { hermesApprovalReplyMarkup } from '../hermes/approvalDelivery.js';
+import { executePostApprovalAction } from '../hermes/postApprovalAction.js';
 import { escapeHtml } from '../utils/format.js';
 
 // ── Mention resolution helper ──────────────────────────────────────────────
@@ -490,8 +491,16 @@ export function setupTelegramHandler(
         try {
           const { ThreadType } = await import('zca-js');
           const zaloThreadType = entry.threadType === 1 ? ThreadType.Group : ThreadType.User;
+          const hasPostApprovalAction = entry.postApprovalAction !== undefined;
+          if (hasPostApprovalAction) {
+            await ctx.answerCbQuery('Đang chạy thao tác sau duyệt...');
+          }
+          const actionResult = entry.postApprovalAction
+            ? await executePostApprovalAction(entry.postApprovalAction)
+            : undefined;
+          const messageToZalo = actionResult?.zaloMessage ?? entry.replyText;
           const sendResult = await currentApi.sendMessage(
-            { msg: entry.replyText },
+            { msg: messageToZalo },
             entry.zaloId,
             zaloThreadType,
           ) as { message?: { msgId?: number } } | undefined;
@@ -506,14 +515,22 @@ export function setupTelegramHandler(
           }
 
           hermesApprovalStore.remove(entry.approvalId);
-          await ctx.answerCbQuery('✅ Đã gửi qua Zalo');
+          if (!hasPostApprovalAction) {
+            await ctx.answerCbQuery('✅ Đã gửi qua Zalo');
+          }
           await ctx.editMessageText(
-            `✅ <b>Đã duyệt và gửi qua Zalo</b>\n\n<b>Mã:</b> <code>${escapeHtml(entry.approvalId)}</code>\n<b>Nơi nhận:</b> ${escapeHtml(entry.chatName)}\n<b>Người hỏi:</b> ${escapeHtml(entry.senderName)}\n\n<b>Nội dung đã gửi:</b>\n${escapeHtml(entry.replyText)}`,
+            actionResult
+              ? `${actionResult.telegramSummary}\n\n<b>Mã:</b> <code>${escapeHtml(entry.approvalId)}</code>\n<b>Nơi nhận:</b> ${escapeHtml(entry.chatName)}\n<b>Người hỏi:</b> ${escapeHtml(entry.senderName)}\n\n<b>Tin đã gửi về Zalo:</b>\n${escapeHtml(messageToZalo)}`
+              : `✅ <b>Đã duyệt và gửi qua Zalo</b>\n\n<b>Mã:</b> <code>${escapeHtml(entry.approvalId)}</code>\n<b>Nơi nhận:</b> ${escapeHtml(entry.chatName)}\n<b>Người hỏi:</b> ${escapeHtml(entry.senderName)}\n\n<b>Nội dung đã gửi:</b>\n${escapeHtml(entry.replyText)}`,
             { parse_mode: 'HTML' },
           ).catch(() => undefined);
         } catch (err) {
           console.error('[Hermes] approve callback failed:', err);
-          await ctx.answerCbQuery('❌ Gửi Zalo thất bại');
+          const message = err instanceof Error ? err.message : String(err);
+          await ctx.answerCbQuery(entry.postApprovalAction ? '❌ Thao tác sau duyệt lỗi' : '❌ Gửi Zalo thất bại').catch(() => undefined);
+          if (entry.postApprovalAction) {
+            await ctx.reply(`Thao tác sau duyệt chưa chạy xong, bản duyệt vẫn được giữ để anh thử lại.\n\nLỗi: ${message}`);
+          }
         }
         return;
       }

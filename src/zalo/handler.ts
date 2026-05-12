@@ -18,6 +18,7 @@ import { shouldRouteZaloTextToHermes } from '../hermes/routing.js';
 import { hermesApprovalStore } from '../hermes/approvalStore.js';
 import { formatHermesAuditLog } from '../hermes/format.js';
 import { sendHermesApprovalRequest } from '../hermes/approvalDelivery.js';
+import { inferPostApprovalAction } from '../hermes/postApprovalAction.js';
 import type { HermesDecision, HermesZaloSourceFile } from '../hermes/types.js';
 import { formatVietnamDateTime, isReminderCapabilityQuestion, parseReminderRequest } from '../reminders/parser.js';
 import { startZaloReminderScheduler } from '../reminders/scheduler.js';
@@ -320,6 +321,7 @@ async function sendHermesDecisionToZalo(
       replyText: decision.replyText.trim(),
       reason: decision.reason ?? decision.approvalPrompt,
       createdAt: new Date().toISOString(),
+      postApprovalAction: inferPostApprovalAction(context.originalText),
     };
     hermesApprovalStore.save(approval);
     try {

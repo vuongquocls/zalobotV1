@@ -3,6 +3,12 @@ import path from 'path';
 
 import { config } from '../config.js';
 
+export interface PendingHermesPostApprovalAction {
+  type: 'facebook_publish_sheet_row';
+  row: number;
+  label: string;
+}
+
 export interface PendingHermesApproval {
   approvalId: string;
   requestId: string;
@@ -16,6 +22,7 @@ export interface PendingHermesApproval {
   reason?: string;
   createdAt: string;
   telegramMessageId?: number;
+  postApprovalAction?: PendingHermesPostApprovalAction;
 }
 
 type ApprovalData = Record<string, PendingHermesApproval>;
