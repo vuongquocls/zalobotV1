@@ -47,6 +47,10 @@ export const hermesApprovalStore = {
     return load()[approvalId];
   },
 
+  getByTelegramMessageId(messageId: number): PendingHermesApproval | undefined {
+    return Object.values(load()).find(entry => entry.telegramMessageId === messageId);
+  },
+
   remove(approvalId: string): PendingHermesApproval | undefined {
     const data = load();
     const entry = data[approvalId];
@@ -56,4 +60,3 @@ export const hermesApprovalStore = {
     return entry;
   },
 };
-

@@ -2,6 +2,7 @@ import { ThreadType } from 'zca-js';
 import path from 'path';
 import { createReadStream } from 'fs';
 import type { Context } from 'telegraf';
+import { randomUUID } from 'crypto';
 
 import type { ZaloAPI } from '../zalo/types.js';
 import { store, msgStore, userCache, friendsCache, sentMsgStore, pollStore, mediaGroupStore } from '../store.js';
@@ -11,11 +12,31 @@ import { downloadToTemp, cleanTemp, convertToM4a } from '../utils/media.js';
 import { triggerQRLogin } from '../zalo/client.js';
 import { hermesApprovalStore } from '../hermes/approvalStore.js';
 import { hermesApprovalTargetStore } from '../hermes/approvalTargets.js';
+import { decideWithHermes } from '../hermes/connector.js';
+import { formatHermesApprovalMessage } from '../hermes/format.js';
+import { hermesApprovalReplyMarkup } from '../hermes/approvalDelivery.js';
 import { escapeHtml } from '../utils/format.js';
 
 // ── Mention resolution helper ──────────────────────────────────────────────
 
 type TgEntity = { type: string; offset: number; length: number; user?: { first_name: string; last_name?: string } };
+
+function isAuthorizedHermesApprover(userId: number): boolean {
+  const approvers = config.telegram.approverUserIds;
+  return approvers.length === 0 || approvers.includes(String(userId));
+}
+
+function telegramReplyToMessageId(message: unknown): number | undefined {
+  if (!message || typeof message !== 'object' || !('reply_to_message' in message)) return undefined;
+  const reply = (message as { reply_to_message?: { message_id?: number } }).reply_to_message;
+  return typeof reply?.message_id === 'number' ? reply.message_id : undefined;
+}
+
+function telegramText(message: unknown): string | undefined {
+  if (!message || typeof message !== 'object') return undefined;
+  const value = (message as { text?: unknown }).text;
+  return typeof value === 'string' ? value : undefined;
+}
 
 /**
  * Resolve TG mention entities (or plain-text @Name patterns) in a string
@@ -382,9 +403,7 @@ export function setupTelegramHandler(
 
     if (data?.startsWith('ha:')) {
       const [, action, approvalId] = data.split(':');
-      const fromId = String(ctx.callbackQuery.from.id);
-      const approvers = config.telegram.approverUserIds;
-      if (approvers.length > 0 && !approvers.includes(fromId)) {
+      if (!isAuthorizedHermesApprover(ctx.callbackQuery.from.id)) {
         await ctx.answerCbQuery('⛔ Anh không có quyền duyệt lệnh này.');
         return;
       }
@@ -402,6 +421,63 @@ export function setupTelegramHandler(
           `❌ <b>Đã từ chối trả lời Zalo</b>\n\n<b>Mã:</b> <code>${escapeHtml(entry.approvalId)}</code>\n<b>Nơi nhận:</b> ${escapeHtml(entry.chatName)}\n<b>Người hỏi:</b> ${escapeHtml(entry.senderName)}`,
           { parse_mode: 'HTML' },
         ).catch(() => undefined);
+        return;
+      }
+
+      if (action === 'g') {
+        await ctx.answerCbQuery('Đang gọi lại Hermes...');
+        const requestId = `zalo_regen_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+        const today = new Intl.DateTimeFormat('vi-VN', {
+          timeZone: 'Asia/Ho_Chi_Minh',
+          weekday: 'long',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).format(new Date());
+        const decision = await decideWithHermes({
+          requestId,
+          channel: 'zalo',
+          chat: { id: entry.zaloId, type: entry.threadType, name: entry.chatName },
+          sender: { id: entry.senderId, name: entry.senderName },
+          message: {
+            msgId: entry.requestId,
+            timestamp: new Date().toISOString(),
+            text: [
+              `Hôm nay theo giờ Việt Nam là ${today}.`,
+              'Anh Quốc yêu cầu kiểm tra lại dự thảo trước khi gửi Zalo.',
+              '',
+              'Tin Zalo gốc:',
+              entry.originalText,
+              '',
+              'Dự thảo hiện tại:',
+              entry.replyText,
+              '',
+              'Hãy kiểm tra lại tính chính xác, nhất là ngày tháng/số liệu/tên riêng/link/file. Viết lại bản trả lời cuối cùng để anh Quốc duyệt.',
+            ].join('\n'),
+          },
+          routing: {
+            isDirectChat: entry.threadType === 0,
+            invokedByAlias: true,
+          },
+        });
+
+        if (!decision.replyText?.trim()) {
+          await ctx.reply(`Hermes chưa trả được bản mới: ${decision.reason ?? 'không rõ lý do'}`);
+          return;
+        }
+
+        const updated = {
+          ...entry,
+          requestId: decision.requestId ?? requestId,
+          replyText: decision.replyText.trim(),
+          reason: decision.reason ?? 'regenerated_by_hermes',
+        };
+        hermesApprovalStore.save(updated);
+        await ctx.editMessageText(formatHermesApprovalMessage(updated), {
+          parse_mode: 'HTML',
+          reply_markup: hermesApprovalReplyMarkup(updated.approvalId),
+        }).catch(() => undefined);
+        await ctx.reply('Đã gọi lại Hermes và cập nhật dự thảo. Anh xem lại rồi bấm “Duyệt gửi Zalo” nếu ổn.');
         return;
       }
 
@@ -599,6 +675,45 @@ export function setupTelegramHandler(
   tgBot.on('message', async (ctx) => {
     try {
       const msg = ctx.message;
+      const approvalReplyTo = telegramReplyToMessageId(msg);
+      const approvalReplyText = telegramText(msg)?.trim();
+      const pendingApproval = approvalReplyTo !== undefined
+        ? hermesApprovalStore.getByTelegramMessageId(approvalReplyTo)
+        : undefined;
+      if (pendingApproval && approvalReplyText && !approvalReplyText.startsWith('/')) {
+        const fromId = 'from' in msg ? msg.from?.id : undefined;
+        if (fromId !== undefined && !isAuthorizedHermesApprover(fromId)) {
+          await ctx.reply('Anh không có quyền sửa bản duyệt này.');
+          return;
+        }
+
+        const updated = {
+          ...pendingApproval,
+          replyText: approvalReplyText,
+          reason: pendingApproval.reason
+            ? `${pendingApproval.reason}; edited_by_telegram_reply`
+            : 'edited_by_telegram_reply',
+        };
+        hermesApprovalStore.save(updated);
+        if (updated.telegramMessageId !== undefined) {
+          await ctx.telegram.editMessageText(
+            ctx.chat.id,
+            updated.telegramMessageId,
+            undefined,
+            formatHermesApprovalMessage(updated),
+            {
+              parse_mode: 'HTML',
+              reply_markup: hermesApprovalReplyMarkup(updated.approvalId),
+            },
+          ).catch(() => undefined);
+        }
+        await ctx.reply(
+          'Đã cập nhật dự thảo theo nội dung anh vừa reply. Anh kiểm tra lại rồi bấm “Duyệt gửi Zalo” để gửi bản đã sửa.',
+          { reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true } },
+        );
+        return;
+      }
+
       // Only handle messages from our bridge group
       if (ctx.chat.id !== config.telegram.groupId) return;
 

@@ -15,6 +15,9 @@ export function formatHermesApprovalMessage(entry: PendingHermesApproval): strin
     '',
     '<b>Dự thảo trả lời:</b>',
     escapeHtml(entry.replyText),
+    '',
+    '<b>Cách sửa trước khi gửi:</b>',
+    'Reply trực tiếp vào tin này bằng bản trả lời đã sửa. Bot sẽ cập nhật dự thảo, rồi anh bấm “Duyệt gửi Zalo”.',
     reason,
   ].join('\n');
 }
@@ -22,4 +25,3 @@ export function formatHermesApprovalMessage(entry: PendingHermesApproval): strin
 export function formatHermesAuditLog(title: string, body: string): string {
   return `<b>${escapeHtml(title)}</b>\n${escapeHtml(body)}`;
 }
-

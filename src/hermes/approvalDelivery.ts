@@ -17,6 +17,22 @@ function configuredApprovalChatIds(): number[] {
   return [...new Set([...dynamicTargets, ...staticTargets])];
 }
 
+export function hermesApprovalReplyMarkup(approvalId: string): {
+  inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+} {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Duyệt gửi Zalo', callback_data: `ha:a:${approvalId}` },
+        { text: 'Từ chối', callback_data: `ha:r:${approvalId}` },
+      ],
+      [
+        { text: 'Gọi lại Hermes', callback_data: `ha:g:${approvalId}` },
+      ],
+    ],
+  };
+}
+
 export async function sendHermesApprovalRequest(
   approval: PendingHermesApproval,
 ): Promise<HermesApprovalDeliveryResult> {
@@ -33,12 +49,7 @@ export async function sendHermesApprovalRequest(
         formatHermesApprovalMessage(approval),
         {
           parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [[
-              { text: 'Duyệt gửi Zalo', callback_data: `ha:a:${approval.approvalId}` },
-              { text: 'Từ chối', callback_data: `ha:r:${approval.approvalId}` },
-            ]],
-          },
+          reply_markup: hermesApprovalReplyMarkup(approval.approvalId),
         },
       );
       return { chatId, messageId: sent.message_id };
