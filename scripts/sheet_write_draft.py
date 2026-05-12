@@ -23,6 +23,8 @@ HEADER_ALIASES = {
     "date": [
         "ngay du kien dang",
         "ngày dự kiến đăng",
+        "ngay dang du kien",
+        "ngày đăng dự kiến",
         "ngay dang",
         "ngày đăng",
         "ngay",
