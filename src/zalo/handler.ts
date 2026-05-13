@@ -477,6 +477,73 @@ async function requestSheetWriteApprovalFromProposal(
   }
 }
 
+async function handleZaloReminderRequest(
+  api: ZaloAPI,
+  params: {
+    zaloId: string;
+    type: ThreadType;
+    displayName: string;
+    senderId: string;
+    senderName: string;
+    body: string;
+  },
+): Promise<boolean> {
+  const { zaloId, type, displayName, senderId, senderName, body } = params;
+  const zaloThreadType = type === ThreadType.Group ? ThreadType.Group : ThreadType.User;
+
+  if (isReminderCapabilityQuestion(body)) {
+    await api.sendMessage(
+      {
+        msg: [
+          'Có anh. Anh có thể nhắn kiểu: "Em nhắc anh sáng mai đi chạy bộ vào lúc 05:00".',
+          'Trong nhóm, anh cũng có thể nhắn: "nhắc anh Phương 08:00 ngày mai cập nhật kế hoạch". Em sẽ lưu lịch và nhắc lại đúng trong nhóm đó.',
+        ].join('\n'),
+      },
+      zaloId,
+      zaloThreadType,
+    );
+    return true;
+  }
+
+  const reminder = parseReminderRequest(body);
+  if (!reminder) return false;
+
+  const reminderId = `zr_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  reminderStore.add({
+    id: reminderId,
+    zaloId,
+    threadType: type,
+    chatName: displayName,
+    senderId,
+    senderName,
+    text: reminder.text,
+    remindAtIso: reminder.remindAt.toISOString(),
+    createdAtIso: new Date().toISOString(),
+    status: 'pending',
+    attempts: 0,
+  });
+  await api.sendMessage(
+    {
+      msg: [
+        `✅ Em đã đặt lịch nhắc: ${reminder.text}`,
+        `Thời gian: ${formatVietnamDateTime(reminder.remindAt)} (giờ Việt Nam).`,
+        type === ThreadType.Group ? 'Đến giờ em sẽ nhắc lại trong nhóm này.' : '',
+      ].filter(Boolean).join('\n'),
+    },
+    zaloId,
+    zaloThreadType,
+  );
+  await tgBot.telegram.sendMessage(
+    config.telegram.approvalGroupId,
+    formatHermesAuditLog(
+      '⏰ Zalo đã đặt lịch nhắc',
+      `Mã: ${reminderId}\nNơi nhận: ${displayName}\nNgười đặt: ${senderName}\nNội dung: ${reminder.text}\nThời gian: ${formatVietnamDateTime(reminder.remindAt)} (giờ Việt Nam)`,
+    ),
+    { parse_mode: 'HTML' },
+  ).catch(() => undefined);
+  return true;
+}
+
 export function setupZaloHandler(api: ZaloAPI): void {
   startZaloReminderScheduler(api);
 
@@ -611,58 +678,18 @@ export function setupZaloHandler(api: ZaloAPI): void {
           if (requested) return;
         }
 
+        if (await handleZaloReminderRequest(api, {
+          zaloId,
+          type,
+          displayName,
+          senderId: msg.data.uidFrom,
+          senderName,
+          body,
+        })) {
+          return;
+        }
+
         if (hermesRoute.route) {
-          if (isReminderCapabilityQuestion(body)) {
-            await api.sendMessage(
-              {
-                msg: [
-                  'Có anh. Anh có thể nhắn kiểu: "Em nhắc anh sáng mai đi chạy bộ vào lúc 05:00".',
-                  'Em sẽ lưu lịch và tự gửi tin nhắc lại đúng giờ Việt Nam, kể cả bot có restart giữa chừng.',
-                ].join('\n'),
-              },
-              zaloId,
-              type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
-            );
-            return;
-          }
-
-          const reminder = parseReminderRequest(body);
-          if (reminder) {
-            const reminderId = `zr_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
-            reminderStore.add({
-              id: reminderId,
-              zaloId,
-              threadType: type,
-              chatName: displayName,
-              senderId: msg.data.uidFrom,
-              senderName,
-              text: reminder.text,
-              remindAtIso: reminder.remindAt.toISOString(),
-              createdAtIso: new Date().toISOString(),
-              status: 'pending',
-              attempts: 0,
-            });
-            await api.sendMessage(
-              {
-                msg: [
-                  `✅ Em đã đặt lịch nhắc: ${reminder.text}`,
-                  `Thời gian: ${formatVietnamDateTime(reminder.remindAt)} (giờ Việt Nam).`,
-                ].join('\n'),
-              },
-              zaloId,
-              type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
-            );
-            await tgBot.telegram.sendMessage(
-              config.telegram.approvalGroupId,
-              formatHermesAuditLog(
-                '⏰ Zalo đã đặt lịch nhắc',
-                `Mã: ${reminderId}\nNơi nhận: ${displayName}\nNgười đặt: ${senderName}\nNội dung: ${reminder.text}\nThời gian: ${formatVietnamDateTime(reminder.remindAt)} (giờ Việt Nam)`,
-              ),
-              { parse_mode: 'HTML' },
-            ).catch(() => undefined);
-            return;
-          }
-
           const hermesContextBody = withRecentZaloLinkContext(zaloId, body);
           const hermesBody = await withSheetWriteProposalHint(hermesContextBody);
           const sourceFiles = getRecentZaloFiles(zaloId);

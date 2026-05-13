@@ -90,6 +90,7 @@ function extractReminderText(original: string): string {
     .replace(/\b(nhac|nhắc)\s+(anh|tôi|toi|mình|minh|em|tớ|to)\b/i, '')
     .replace(/\b(giúp anh|giup anh|giùm anh|gium anh|hộ anh|ho anh)\b/i, '')
     .replace(/\b(vào lúc|vao luc|lúc|luc)\s*\d{1,2}(?::|h| giờ)?\s*\d{0,2}\b/gi, '')
+    .replace(/\b\d{1,2}(?::|h)\d{2}\b/g, '')
     .replace(/\b(ngày mai|ngay mai|sáng mai|sang mai|tối mai|toi mai|chiều mai|chieu mai|hôm nay|hom nay|ngày kia|ngay kia|mốt|mot)\b/gi, '')
     .replace(/\b\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{2,4})?\b/g, '')
     .replace(/\s+/g, ' ')
