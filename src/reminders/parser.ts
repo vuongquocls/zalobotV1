@@ -86,8 +86,11 @@ function parseDate(normalized: string, now: Date, hour: number, minute: number):
 
 function extractReminderText(original: string): string {
   let text = original
+    .replace(/^\s*@?[\p{L}\p{N}_-]+\s+(ơi|oi)[,\s]+/iu, '')
+    .replace(/^\s*@?[\p{L}\p{N}_-]+[,\s]+(?=(nhac|nhắc|hen|hẹn))/iu, '')
     .replace(/^\s*(em|bot|hermes|zalo bot)[,\s]+/i, '')
-    .replace(/\b(nhac|nhắc)\s+(anh|tôi|toi|mình|minh|em|tớ|to)\b/i, '')
+    .replace(/\b(nhac hen|nhắc hẹn|nhac|nhắc)\s+(mọi người|moi nguoi|cả nhóm|ca nhom|nhóm|nhom|anh em|ae)\b/i, '$2')
+    .replace(/\b(nhac hen|nhắc hẹn|nhac|nhắc)\s+(anh|tôi|toi|mình|minh|em|tớ|to)\b/i, '')
     .replace(/\b(giúp anh|giup anh|giùm anh|gium anh|hộ anh|ho anh)\b/i, '')
     .replace(/\b(vào lúc|vao luc|lúc|luc)\s*\d{1,2}(?::|h| giờ)?\s*\d{0,2}\b/gi, '')
     .replace(/\b\d{1,2}(?::|h)\d{2}\b/g, '')
@@ -109,7 +112,7 @@ export function isReminderCapabilityQuestion(input: string): boolean {
 export function parseReminderRequest(input: string, now = new Date()): ParsedReminder | null {
   const normalized = normalizeVietnamese(input);
   if (!/\b(nhac|hen|nhac hen)\b/.test(normalized)) return null;
-  if (!/\b(anh|toi|minh|em|to)\b/.test(normalized)) return null;
+  if (!/\b(anh|toi|minh|em|to|moi nguoi|ca nhom|nhom|anh em|ae)\b/.test(normalized)) return null;
 
   const parsedTime = parseTime(normalized);
   if (!parsedTime) return null;
