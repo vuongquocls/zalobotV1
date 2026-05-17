@@ -697,12 +697,35 @@ export function setupZaloHandler(api: ZaloAPI): void {
           try {
             const sheetReply = await buildSheetReply(body);
             if (sheetReply) {
+              const requestId = `zalo_sheet_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+              const approvalRequested = await sendHermesDecisionToZalo(
+                api,
+                {
+                  decision: 'needs_approval',
+                  requestId,
+                  replyText: sheetReply,
+                  reason: `local_sheet_reply:${sheetReplyIntent}`,
+                },
+                {
+                  requestId,
+                  zaloId,
+                  type,
+                  displayName,
+                  senderId: msg.data.uidFrom,
+                  senderName,
+                  originalText: body,
+                },
+              );
+              if (approvalRequested) {
+                console.log(`[ZaloSheet] approval requested type=${type} sender="${senderName}" chat="${displayName}" intent=${sheetReplyIntent}`);
+                return;
+              }
+
               await api.sendMessage(
-                { msg: sheetReply },
+                { msg: 'Em đã đọc được Google Sheet nhưng đang lỗi kênh xin duyệt Telegram. Anh thử lại sau ít phút giúp em nhé.' },
                 zaloId,
                 type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
               );
-              console.log(`[ZaloSheet] local reply sent type=${type} sender="${senderName}" chat="${displayName}"`);
               return;
             }
           } catch (sheetErr) {
