@@ -24,6 +24,7 @@ import type { HermesDecision, HermesZaloSourceFile } from '../hermes/types.js';
 import { formatVietnamDateTime, isReminderCapabilityQuestion, parseReminderRequest } from '../reminders/parser.js';
 import { startZaloReminderScheduler } from '../reminders/scheduler.js';
 import { reminderStore } from '../reminders/store.js';
+import { buildSheetReply, classifySheetReplyIntent } from './sheetReplies.js';
 
 let telegramForumUnavailable = false;
 
@@ -687,6 +688,32 @@ export function setupZaloHandler(api: ZaloAPI): void {
           body,
         })) {
           return;
+        }
+
+        const sheetReplyIntent = classifySheetReplyIntent(body);
+        const shouldHandleSheetLocally = sheetReplyIntent !== undefined
+          && (type === ThreadType.User || hermesRoute.invokedByAlias || sheetReplyIntent !== 'pending');
+        if (shouldHandleSheetLocally) {
+          try {
+            const sheetReply = await buildSheetReply(body);
+            if (sheetReply) {
+              await api.sendMessage(
+                { msg: sheetReply },
+                zaloId,
+                type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
+              );
+              console.log(`[ZaloSheet] local reply sent type=${type} sender="${senderName}" chat="${displayName}"`);
+              return;
+            }
+          } catch (sheetErr) {
+            console.warn('[ZaloSheet] local Sheet reply failed:', sheetErr);
+            await api.sendMessage(
+              { msg: 'Em đang không đọc được Google Sheet ở thời điểm này. Anh thử lại sau ít phút giúp em nhé.' },
+              zaloId,
+              type === ThreadType.Group ? ThreadType.Group : ThreadType.User,
+            );
+            return;
+          }
         }
 
         if (hermesRoute.route) {
