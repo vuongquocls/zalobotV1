@@ -25,6 +25,8 @@ export const config = {
   },
   zalo: {
     credentialsPath: process.env.ZALO_CREDENTIALS_PATH ?? './credentials.json',
+    digestTargetGroupId: process.env.ZALO_DIGEST_TARGET_GROUP_ID ?? '45373282205285418',
+    digestTargetGroupName: process.env.ZALO_DIGEST_TARGET_GROUP_NAME ?? process.env.ZALO_GROUP_NAME ?? 'Truyền thông Yok Đôn',
     botAliases: (process.env.ZALO_BOT_ALIASES ?? 'lâm,lam,nhân viên mới yok đôn,nhan vien moi yok don,hermes,zalo bot,bot')
       .split(',')
       .map(v => v.trim())

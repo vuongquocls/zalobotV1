@@ -312,6 +312,94 @@ function isSheetWriteAgreement(text: string): boolean {
   return /\b(dong y|ok|oke|duyet|chap nhan|ghi di|ghi vao sheet|trien khai|lam di)\b/.test(normalized);
 }
 
+function normalizeCommandText(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isForwardLatestDigestCommand(text: string): boolean {
+  const normalized = normalizeCommandText(text);
+  return /\bgui\b/.test(normalized)
+    && /\b(cac )?tin tren\b/.test(normalized)
+    && /\b(nhom|group)\b/.test(normalized)
+    && (
+      normalized.includes('truyen thong yok don')
+      || normalized.includes(normalizeCommandText(config.zalo.digestTargetGroupName))
+    );
+}
+
+function latestSentDigestParts(): string[] {
+  const reminders = reminderStore
+    .all()
+    .filter(reminder => reminder.status === 'sent'
+      && reminder.threadType === 0
+      && reminder.zaloId === '9135812107335674691'
+      && reminder.id.startsWith('zr_digest_'))
+    .sort((a, b) => Date.parse(b.createdAtIso) - Date.parse(a.createdAtIso));
+  const latest = reminders[0];
+  if (!latest) return [];
+  const prefix = latest.id.replace(/_\d+$/, '');
+  return reminders
+    .filter(reminder => reminder.id === prefix || reminder.id.startsWith(`${prefix}_`))
+    .sort((a, b) => {
+      const partA = Number(a.id.match(/_(\d+)$/)?.[1] ?? 1);
+      const partB = Number(b.id.match(/_(\d+)$/)?.[1] ?? 1);
+      return partA - partB;
+    })
+    .map(reminder => reminder.text);
+}
+
+async function handleForwardLatestDigestCommand(
+  api: ZaloAPI,
+  params: {
+    zaloId: string;
+    type: ThreadType;
+    body: string;
+  },
+): Promise<boolean> {
+  const { zaloId, type, body } = params;
+  if (type !== ThreadType.User || !isForwardLatestDigestCommand(body)) return false;
+
+  const parts = latestSentDigestParts();
+  if (parts.length === 0) {
+    await api.sendMessage(
+      { msg: 'Em chưa tìm thấy bản tin bảo tồn gần nhất để gửi vào nhóm.' },
+      zaloId,
+      ThreadType.User,
+    );
+    return true;
+  }
+
+  try {
+    for (const part of parts) {
+      await api.sendMessage(
+        { msg: part },
+        config.zalo.digestTargetGroupId,
+        ThreadType.Group,
+      );
+    }
+    await api.sendMessage(
+      { msg: `Em đã gửi ${parts.length} phần bản tin gần nhất vào nhóm "${config.zalo.digestTargetGroupName}".` },
+      zaloId,
+      ThreadType.User,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('[ZaloDigest] forward latest digest failed:', err);
+    await api.sendMessage(
+      { msg: `Em chưa gửi được bản tin vào nhóm "${config.zalo.digestTargetGroupName}". Lỗi: ${message}` },
+      zaloId,
+      ThreadType.User,
+    );
+  }
+  return true;
+}
+
 function guessMimeType(fileName: string): string | undefined {
   const ext = path.extname(fileName).toLowerCase();
   const mimes: Record<string, string> = {
@@ -657,6 +745,10 @@ export function setupZaloHandler(api: ZaloAPI): void {
         const body = text ?? (typeof msg.data.content === 'string' ? msg.data.content : '');
         if (!body.trim()) return;
         saveRecentZaloLinksFromText(zaloId, body);
+
+        if (await handleForwardLatestDigestCommand(api, { zaloId, type, body })) {
+          return;
+        }
 
         const hermesRoute = shouldRouteZaloTextToHermes(body, type);
         console.log(`[Hermes] route_check type=${type} route=${hermesRoute.route} alias=${hermesRoute.invokedByAlias} sender="${senderName}" chat="${displayName}" text="${truncate(body, 120)}"`);
