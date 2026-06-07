@@ -11,9 +11,9 @@ let scanRunning = false;
 
 function reminderMessage(reminder: ZaloReminder): string {
   return [
-    `⏰ Nhắc hẹn: ${reminder.text}`,
-    '',
-    `Anh đã hẹn em nhắc lúc ${formatVietnamDateTime(new Date(reminder.remindAtIso))} (giờ Việt Nam).`,
+    '⏰ Đến giờ nhắc hẹn.',
+    `• Việc: ${reminder.text}`,
+    `• Thời gian đã hẹn: ${formatVietnamDateTime(new Date(reminder.remindAtIso))} (giờ Việt Nam)`,
   ].join('\n');
 }
 

@@ -82,6 +82,19 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
         self.assertEqual(reminder["task"], "đăng bài")
         self.assertTrue(reminder["due_at"].startswith("2026-04-26T08:00:00"))
 
+    def test_parse_reminder_with_weekday_next_week(self):
+        now = datetime(2026, 6, 7, 15, 48, tzinfo=LOCAL_TZ)
+
+        reminder = zalo_bot._parse_custom_reminder_request(
+            "nhắc anh Quốc 19:30 thứ 7 tuần sau chở má đi mua giày",
+            "Truyền thông Yok Đôn",
+            now=now,
+        )
+
+        self.assertEqual(reminder["target"], "anh Quốc")
+        self.assertEqual(reminder["task"], "chở má đi mua giày")
+        self.assertTrue(reminder["due_at"].startswith("2026-06-13T19:30:00"))
+
     def test_parse_reminder_with_only_time_uses_today_if_future(self):
         now = datetime(2026, 4, 25, 8, 0, tzinfo=LOCAL_TZ)
 
@@ -182,7 +195,10 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
                 await zalo_bot._maybe_send_due_custom_reminders(AsyncMock())
 
             self.assertEqual(opened_chats, ["Truyền thông Yok Đôn"])
-            self.assertEqual(sent_messages, ["anh Quốc ơi, em nhắc việc: đón con."])
+            self.assertEqual(
+                sent_messages,
+                ["⏰ anh Quốc ơi, đến giờ nhắc việc.\n• Việc: đón con\n• Thời gian đã hẹn: 08:25 thứ Bảy, ngày 25/04/2026 (giờ Việt Nam)"],
+            )
             self.assertTrue(state["custom_reminders"][0]["sent"])
             save_state.assert_called_once()
 
@@ -225,7 +241,10 @@ class ZaloBotReplyRuleTests(unittest.TestCase):
                 await zalo_bot._maybe_send_due_custom_reminders(AsyncMock())
 
             open_chat.assert_not_called()
-            self.assertEqual(sent_messages, ["anh Quốc ơi, em nhắc việc: đi đón con."])
+            self.assertEqual(
+                sent_messages,
+                ["⏰ anh Quốc ơi, đến giờ nhắc việc.\n• Việc: đi đón con\n• Thời gian đã hẹn: 08:25 thứ Bảy, ngày 25/04/2026 (giờ Việt Nam)"],
+            )
             self.assertTrue(state["custom_reminders"][0]["sent"])
             save_state.assert_called_once()
 

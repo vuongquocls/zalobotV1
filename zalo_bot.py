@@ -255,6 +255,7 @@ REMINDER_TASK_STARTERS = (
     "bao",
     "bao lai",
     "chuan bi",
+    "cho",
     "hop",
     "len",
     "kiem tra",
@@ -262,6 +263,11 @@ REMINDER_TASK_STARTERS = (
 )
 REMINDER_TEMPORAL_FILLERS_RE = re.compile(
     r"^(?:sáng|sang|chiều|chieu|tối|toi|trưa|trua|ngày|ngay|mai|vào|vao|lúc|luc)\s+",
+    re.IGNORECASE,
+)
+REMINDER_WEEKDAY_RE = re.compile(
+    r"\b(?:(?:thứ|thu)\s*(?:hai|2|ba|3|tư|tu|4|năm|nam|5|sáu|sau|6|bảy|bay|7)|(?:chủ\s*nhật|chu\s*nhat|cn))\b"
+    r"(?:\s+(?:tuần|tuan)\s+(?:này|nay|sau|tới|toi|kế|ke))?",
     re.IGNORECASE,
 )
 
@@ -306,7 +312,26 @@ def _parse_time_from_text(text: str) -> tuple[int | None, int | None, list[tuple
     return hour, minute, spans
 
 
-def _parse_date_from_text(text: str, now: datetime) -> tuple[datetime.date | None, list[tuple[int, int]]]:
+def _weekday_index_from_text(text: str) -> int | None:
+    normalized = _simplify_text(text)
+    if re.search(r"\b(?:chu\s*nhat|cn)\b", normalized):
+        return 6
+    if re.search(r"\bthu\s*(?:2|hai)\b", normalized):
+        return 0
+    if re.search(r"\bthu\s*(?:3|ba)\b", normalized):
+        return 1
+    if re.search(r"\bthu\s*(?:4|tu)\b", normalized):
+        return 2
+    if re.search(r"\bthu\s*(?:5|nam)\b", normalized):
+        return 3
+    if re.search(r"\bthu\s*(?:6|sau)\b", normalized):
+        return 4
+    if re.search(r"\bthu\s*(?:7|bay)\b", normalized):
+        return 5
+    return None
+
+
+def _parse_date_from_text(text: str, now: datetime) -> tuple[datetime.date | None, list[tuple[int, int]], str | None]:
     spans: list[tuple[int, int]] = []
     match = re.search(
         r"(?:ngày|ngay)?\s*\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b",
@@ -322,16 +347,30 @@ def _parse_date_from_text(text: str, now: datetime) -> tuple[datetime.date | Non
             year += 2000
         try:
             spans.append(match.span())
-            return datetime(year, month, day, tzinfo=now.tzinfo).date(), spans
+            return datetime(year, month, day, tzinfo=now.tzinfo).date(), spans, "explicit"
         except ValueError:
-            return None, []
+            return None, [], None
 
     relative = re.search(r"\b(?:sáng\s+mai|sang\s+mai|ngày\s+mai|ngay\s+mai|mai)\b", text or "", flags=re.IGNORECASE)
     if relative:
         spans.append(relative.span())
-        return (now + timedelta(days=1)).date(), spans
+        return (now + timedelta(days=1)).date(), spans, "relative"
 
-    return None, spans
+    weekday = REMINDER_WEEKDAY_RE.search(text or "")
+    if weekday:
+        target_weekday = _weekday_index_from_text(weekday.group(0))
+        if target_weekday is not None:
+            spans.append(weekday.span())
+            normalized_weekday = _simplify_text(weekday.group(0))
+            start_of_week = now.date() - timedelta(days=now.weekday())
+            if re.search(r"\btuan\s+(?:sau|toi|ke)\b", normalized_weekday):
+                return start_of_week + timedelta(days=7 + target_weekday), spans, "weekday"
+            if re.search(r"\btuan\s+nay\b", normalized_weekday):
+                return start_of_week + timedelta(days=target_weekday), spans, "weekday"
+            days_ahead = (target_weekday - now.weekday()) % 7
+            return now.date() + timedelta(days=days_ahead), spans, "floating_weekday"
+
+    return None, spans, None
 
 
 def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
@@ -402,7 +441,7 @@ def _parse_custom_reminder_request(text: str, chat_name: str, now: datetime | No
 
     reminder_body = (match.group(1) or match.group(2) or "").strip(" ,.;:-")
     hour, minute, time_spans = _parse_time_from_text(reminder_body)
-    due_date, date_spans = _parse_date_from_text(reminder_body, now)
+    due_date, date_spans, date_kind = _parse_date_from_text(reminder_body, now)
     body_without_time = _remove_spans(reminder_body, [*time_spans, *date_spans])
     target, task = _split_reminder_target_and_task(body_without_time)
     if not target or not task:
@@ -427,7 +466,12 @@ def _parse_custom_reminder_request(text: str, chat_name: str, now: datetime | No
         )
 
     if due_at <= now:
-        due_at = due_at + timedelta(days=1)
+        if date_kind == "floating_weekday":
+            due_at = due_at + timedelta(days=7)
+        elif due_date is not None:
+            return {"error": "past_due_at"}
+        else:
+            due_at = due_at + timedelta(days=1)
 
     created_at = now.isoformat(timespec="seconds")
     reminder_id = f"rem-{int(now.timestamp())}-{abs(hash((chat_name, target, task, due_at.isoformat()))) % 100000}"
@@ -445,22 +489,33 @@ def _parse_custom_reminder_request(text: str, chat_name: str, now: datetime | No
 
 def _format_reminder_due_at(value: str) -> str:
     due_at = datetime.fromisoformat(value)
-    return due_at.strftime("%H:%M ngày %d/%m/%Y")
+    weekdays = (
+        "thứ Hai",
+        "thứ Ba",
+        "thứ Tư",
+        "thứ Năm",
+        "thứ Sáu",
+        "thứ Bảy",
+        "Chủ nhật",
+    )
+    return due_at.strftime(f"%H:%M {weekdays[due_at.weekday()]}, ngày %d/%m/%Y")
 
 
 def _build_custom_reminder_confirmation(reminder: dict) -> str:
     return (
-        "Em đã ghi nhớ.\n"
-        f"- Sẽ nhắc: {reminder['target']}\n"
-        f"- Lúc: {_format_reminder_due_at(reminder['due_at'])}\n"
-        f"- Việc: {reminder['task']}"
+        "✅ Đã đặt lịch nhắc.\n"
+        f"• Người nhận: {reminder['target']}\n"
+        f"• Việc: {reminder['task']}\n"
+        f"• Thời gian: {_format_reminder_due_at(reminder['due_at'])} (giờ Việt Nam)"
     )
 
 
 def _build_due_custom_reminder_message(reminder: dict) -> str:
     target = reminder.get("target", "Anh/Chị")
     task = reminder.get("task", "việc đã hẹn")
-    return f"{target} ơi, em nhắc việc: {task}."
+    due_at = reminder.get("due_at")
+    due_line = f"\n• Thời gian đã hẹn: {_format_reminder_due_at(due_at)} (giờ Việt Nam)" if due_at else ""
+    return f"⏰ {target} ơi, đến giờ nhắc việc.\n• Việc: {task}{due_line}"
 
 
 def _save_custom_reminder(reminder: dict) -> None:
@@ -2052,6 +2107,15 @@ async def _handle_custom_reminder_request(page, chat_name: str, text: str) -> bo
         return False
 
     if reminder.get("error"):
+        if reminder.get("error") == "past_due_at":
+            await _send_message(
+                page,
+                "Em hiểu Anh/Chị muốn đặt nhắc hẹn, nhưng mốc thời gian đó đã qua. "
+                "Anh/Chị gửi lại một thời điểm trong tương lai giúp em nhé.",
+            )
+            _log_event("custom_reminder.parse_failed", chat=chat_name, text=text[:160], error=reminder.get("error"))
+            return True
+
         await _send_message(
             page,
             "Em hiểu Anh/Chị muốn em nhắc việc, nhưng em chưa tách được đủ người được nhắc, thời gian và nội dung việc. "

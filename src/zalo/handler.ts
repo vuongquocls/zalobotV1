@@ -614,9 +614,10 @@ async function handleZaloReminderRequest(
   await api.sendMessage(
     {
       msg: [
-        `✅ Em đã đặt lịch nhắc: ${reminder.text}`,
-        `Thời gian: ${formatVietnamDateTime(reminder.remindAt)} (giờ Việt Nam).`,
-        type === ThreadType.Group ? 'Đến giờ em sẽ nhắc lại trong nhóm này.' : '',
+        '✅ Đã đặt lịch nhắc.',
+        `• Việc: ${reminder.text}`,
+        `• Thời gian: ${formatVietnamDateTime(reminder.remindAt)} (giờ Việt Nam)`,
+        type === ThreadType.Group ? '• Nơi nhắc: nhóm này' : '• Nơi nhắc: cuộc trò chuyện này',
       ].filter(Boolean).join('\n'),
     },
     zaloId,
